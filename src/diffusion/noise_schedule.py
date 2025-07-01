@@ -7,7 +7,21 @@ from src.diffusion import diffusion_utils
 class PredefinedNoiseSchedule(torch.nn.Module):
     """
     Predefined noise schedule. Essentially creates a lookup array for predefined (non-learned) noise schedules.
+    미리 설정된 노이즈 스케줄, 연속형 (continuous), ConGress
     """
+    #### gamma 값을 사용하는 이유 ####
+    # 1.Signal-to-Noise Ratio (SNR)를 간단하게 표현하기 위해
+    # 2. α(t)와 σ(t)를 매끄럽게 계산할 수 있음
+    # γ 하나만 있으면 α와 σ를 동시에 계산할 수 있습니다.
+    # 이건 특히 학습과 샘플링 과정에서 필요한 모든 값을 하나의 텐서 gamma로부터 빠르게 구할 수 있도록 해 줍니다.
+    # 3. 시간의 연속 표현을 쉽게 하기 위해
+    # γ(t)를 미리 계산한 테이블로 저장해두고 (lookup),
+    # 연속적인 t값에 대해 γ(t)를 추출하는 식으로 스케줄을 구현합니다:
+    # 4. KL divergence 및 ELBO 계산 시 수식이 간결해짐
+    # 논문 본문 및 Appendix C에 보면 Evidence Lower Bound (ELBO) 계산 시
+    # KL divergence나 posterior 계산에 γ가 직접적으로 사용
+    # 이때 α와 σ 대신 γ로 수식을 표현하면 로그 분포 간 계산이 깔끔하게 됩니다.
+    #### 시각화는 Practice_SRC 폴더 안 diffusion 폴더 내의 PredefinedNoiseSchedule 파이썬 파일 참조 ####
 
     def __init__(self, noise_schedule, timesteps):
         super(PredefinedNoiseSchedule, self).__init__()
@@ -22,8 +36,10 @@ class PredefinedNoiseSchedule(torch.nn.Module):
 
         # print('alphas2', alphas2)
 
+        ### 노이즈 비율 σ²_t = 1 - α²_t → 시간에 따라 신호는 줄고 노이즈는 늘어나도록 함 ###
         sigmas2 = 1 - alphas2
 
+        ### log(α² / σ²) = log_alphas2 - log_sigmas2 → 즉 γ(t) = -log(α² / σ²) = log(σ² / α²)를 미리 계산함 ###
         log_alphas2 = np.log(alphas2)
         log_sigmas2 = np.log(sigmas2)
 
@@ -31,6 +47,8 @@ class PredefinedNoiseSchedule(torch.nn.Module):
 
         # print('gamma', -log_alphas2_to_sigmas2)
 
+        ### 계산된 γ(t)를 self.gamma에 저장 ###
+        # requires_grad=False이므로 학습되지 않는 고정된 schedule
         self.gamma = torch.nn.Parameter(
             torch.from_numpy(-log_alphas2_to_sigmas2).float(),
             requires_grad=False)
@@ -44,6 +62,7 @@ class PredefinedNoiseSchedule(torch.nn.Module):
 class PredefinedNoiseScheduleDiscrete(torch.nn.Module):
     """
     Predefined noise schedule. Essentially creates a lookup array for predefined (non-learned) noise schedules.
+    이산형 (discrete), DiGress
     """
 
     def __init__(self, noise_schedule, timesteps):

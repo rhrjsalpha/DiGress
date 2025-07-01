@@ -46,16 +46,30 @@ def cosine_beta_schedule(timesteps, s=0.008, raise_to_power: float = 1):
     """
     cosine schedule
     as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
+    timesteps: 총 diffusion step 수 (예: 1000)
+    s: smoothing parameter (논문에서 제안된 0.008 사용)
+    raise_to_power: alphā_t에 지수 조정을 적용할 수 있는 옵션 (기본값 1)
+    스케줄의 시각화는 Practice_SRC 폴더안의 cosine_beta_schedule을 보도록
     """
+    ### 전체 step + 2 길이 ###
+    # +2 한이유 : 양말단 time 0 과 time t+1 정의
     steps = timesteps + 2
-    x = np.linspace(0, steps, steps)
+    x = np.linspace(0, steps, steps) # 지정한 구간(0, step) 에서 일정한 간격으로 나눈 값을 생성 :0~step 구간을 step 개수만큼 자름
+
+    ### cosine 곡선 형태의 누적 alpha 값을 만들고, 1로 정규화 ###
     alphas_cumprod = np.cos(((x / steps) + s) / (1 + s) * np.pi * 0.5) ** 2
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+
+    ### beta 값 도출 ###
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+
+    ### 안정성 위한 clipping ###
+    # 수치적 불안정 방지를 위한 최소/최대값 제한
     betas = np.clip(betas, a_min=0, a_max=0.999)
+
+    #  다시 alphā_t 계산
     alphas = 1. - betas
     alphas_cumprod = np.cumprod(alphas, axis=0)
-
     if raise_to_power != 1:
         alphas_cumprod = np.power(alphas_cumprod, raise_to_power)
 
@@ -64,13 +78,28 @@ def cosine_beta_schedule(timesteps, s=0.008, raise_to_power: float = 1):
 
 def cosine_beta_schedule_discrete(timesteps, s=0.008):
     """ Cosine schedule as proposed in https://openreview.net/forum?id=-NEXDKk8gZ. """
+
+    ### 전체 step + 2 길이 ###
+    # +2 한이유 : 양말단 time 0 과 time t+1 정의
     steps = timesteps + 2
+    # x: 0 ~ steps까지 선형적으로 나눈 구간
+    # ex) steps=1002일 경우 0 ~ 1001 구간 생성
     x = np.linspace(0, steps, steps)
 
+    ### cosine 함수 기반의 누적 alpha 계산 ###
+    # 시간에 따라 감소하는 형태이며, 처음엔 1에 가깝고, 마지막엔 0에 가까움
     alphas_cumprod = np.cos(0.5 * np.pi * ((x / steps) + s) / (1 + s)) ** 2
+
+    ### 정규화: 맨 처음 값을 1로 만들기 위해 전체를 나눔 ###
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+
+    ### 누적곱 상태에서, 두 단계 사이의 순수 alpha (1 - beta) 값을 계산 ###
     alphas = (alphas_cumprod[1:] / alphas_cumprod[:-1])
+
+    # 이 단계에서 최종적으로 필요한 것은 beta_t
     betas = 1 - alphas
+    
+    # 1D array로 압축된 beta_t 시퀀스를 반환
     return betas.squeeze()
 
 
