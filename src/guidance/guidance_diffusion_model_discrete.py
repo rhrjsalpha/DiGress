@@ -548,15 +548,16 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         prob_E = unnormalized_prob_E / torch.sum(unnormalized_prob_E, dim=-1, keepdim=True)
         prob_E = prob_E.reshape(bs, n, n, pred_E.shape[-1])
 
-        # # Guidance
+        # # Guidance # #
+        # Regressor사용하여 조건부 생성 #
         lamb = self.args.guidance.lambda_guidance
 
-        grad_x, grad_e = self.cond_fn(noisy_data, node_mask, input_properties)
+        grad_x, grad_e = self.cond_fn(noisy_data, node_mask, input_properties) # Regressor Gradient
 
-        p_eta_x = torch.softmax(- lamb * grad_x, dim=-1)
+        p_eta_x = torch.softmax(- lamb * grad_x, dim=-1) # λ 〈∇‖ŷ – y₍G₎‖² , onehot(x) – xᵗ〉 항을 소프트-맥스로 변환
         p_eta_e = torch.softmax(- lamb * grad_e, dim=-1)
 
-        prob_X_unnormalized = p_eta_x * prob_X
+        prob_X_unnormalized = p_eta_x * prob_X # Guided posterior
         prob_X_unnormalized[torch.sum(prob_X_unnormalized, dim=-1) == 0] = 1e-7
         prob_X = prob_X_unnormalized / torch.sum(prob_X_unnormalized, dim=-1, keepdim=True)
 
@@ -569,8 +570,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         sampled_s = diffusion_utils.sample_discrete_features(prob_X, prob_E, node_mask=node_mask)
 
-        X_s = F.one_hot(sampled_s.X, num_classes=self.Xdim_output).float()
-        E_s = F.one_hot(sampled_s.E, num_classes=self.Edim_output).float()
+        X_s = F.one_hot(sampled_s.X, num_classes=self.Xdim_output).float() # one hot sampling
+        E_s = F.one_hot(sampled_s.E, num_classes=self.Edim_output).float() # one hot sampling
 
         assert (E_s == torch.transpose(E_s, 1, 2)).all()
         assert (X_t.shape == X_s.shape) and (E_t.shape == E_s.shape)
