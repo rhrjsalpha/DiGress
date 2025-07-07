@@ -76,6 +76,12 @@ class PredefinedNoiseScheduleDiscrete(torch.nn.Module):
         assert int(t_normalized is None) + int(t_int is None) == 1
         if t_int is None:
             t_int = torch.round(t_normalized * self.timesteps)
+            #t_int = t_int.to(self.alphas_bar.device)
+        if self.alphas_bar.device != t_int.device:
+            self.alphas_bar = self.alphas_bar.to(t_int.device)
+
+        print("alphas_bar.device:", self.alphas_bar.device)
+        print("t_int.device:", t_int.device)
         return self.alphas_bar[t_int.long()]
 
 

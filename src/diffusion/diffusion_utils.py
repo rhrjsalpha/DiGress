@@ -271,18 +271,32 @@ def compute_posterior_distribution(M, M_t, Qt_M, Qsb_M, Qtb_M):
     ''' M: X or E
         Compute xt @ Qt.T * x0 @ Qsb / x0 @ Qtb @ xt.T
     '''
-    # Flatten feature tensors
+    # M     → 원래 값 (예: X)
+    # M_t   → noisy 값 (예: X_t, z_t)
+    # Qt_M  → Qt (q(z_t | z_{t-1}))
+    # Qsb_M → Qsb (q(z_{t-1} | x))
+    # Qtb_M → Qtb (q(z_t | x))
+    # q(z_{t-1} | z_t, x) = Qt * Qsb / Qtb
+
+    # Flatten feature tensors |  일관된 3차원 텐서 형식으로 계산을 수행하기 위해서 #
     M = M.flatten(start_dim=1, end_dim=-2).to(torch.float32)        # (bs, N, d) with N = n or n * n
     M_t = M_t.flatten(start_dim=1, end_dim=-2).to(torch.float32)    # same
 
     Qt_M_T = torch.transpose(Qt_M, -2, -1)      # (bs, d, d)
 
-    left_term = M_t @ Qt_M_T   # (bs, N, d)
-    right_term = M @ Qsb_M     # (bs, N, d)
+    ### PracticeSRC > diffusion > diffusion utils > posterior compotation 이미지 파일 참조 ###
+    # 1. M_t @ Qt_M_T -> q(z_t | z_t-1)
+    # - 본래 M_t-1에 Qt_M을 곱하여 M_t를 만들게 됨
+    # - 위 과정을 역으로 하기 위해서 M_t에 Qt_M 을 transpose 하여 Qt_M_T를 만듦
+    # - 그리고 M_T 와 Qt_M_T를 곱하여 M_t-1을 얻고자 함
+    # 2. M @ Qsb_M -> q(z_t-1 | x)
+    left_term = M_t @ Qt_M_T   # (bs, N, d) | PracticeSRC > diffusion > diffusion utils > posterior compotation 이미지 파일의 (1)
+
+    right_term = M @ Qsb_M     # (bs, N, d) | PracticeSRC > diffusion > diffusion utils > posterior compotation 이미지 파일의 (2)
     product = left_term * right_term    # (bs, N, d)
 
-    denom = M @ Qtb_M     # (bs, N, d) @ (bs, d, d) = (bs, N, d)
-    denom = (denom * M_t).sum(dim=-1)   # (bs, N, d) * (bs, N, d) + sum = (bs, N)
+    denom = M @ Qtb_M     # (bs, N, d) @ (bs, d, d) = (bs, N, d) | # posterior compotation 이미지 파일의 (3)
+    denom = (denom * M_t).sum(dim=-1)   # (bs, N, d) * (bs, N, d) + sum = (bs, N) | # posterior compotation 이미지 파일의 (3)
     # denom = product.sum(dim=-1)
     # denom[denom == 0.] = 1
 

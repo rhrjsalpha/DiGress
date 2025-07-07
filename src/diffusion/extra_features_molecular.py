@@ -53,5 +53,8 @@ class WeightFeature:
 
     def __call__(self, noisy_data):
         X = torch.argmax(noisy_data['X_t'], dim=-1)     # (bs, n)
+        self.atom_weight_list = self.atom_weight_list.to(X.device)
         X_weights = self.atom_weight_list[X]            # (bs, n)
+        print("X.device", X.device)
+        print("self.atom_weight_list.device", self.atom_weight_list.device)
         return X_weights.sum(dim=-1).unsqueeze(-1).type_as(noisy_data['X_t']) / self.max_weight     # (bs, 1)

@@ -36,10 +36,13 @@ warnings.filterwarnings("ignore", category=PossibleUserWarning)
 
 def get_resume(cfg, model_kwargs):
     """ Resumes a run. It loads previous config without allowing to update keys (used for testing). """
+    # 이전에 저장된 체크포인트에서 모델과 설정(config)을 복원 #
     saved_cfg = cfg.copy()
     name = cfg.general.name + '_resume'
     resume = cfg.general.test_only
     chains_to_save = cfg.general.chains_to_save
+
+    # 지정된 체크포인트로부터 diffusion 모델을 불러옴 (이전 학습 결과)
     if cfg.model.type == 'discrete':
         model = DiscreteDenoisingDiffusion.load_from_checkpoint(resume, **model_kwargs)
     else:
@@ -54,6 +57,8 @@ def get_resume(cfg, model_kwargs):
 
 def get_resume_adaptive(cfg, model_kwargs):
     """ Resumes a run. It loads previous config but allows to make some changes (used for resuming training)."""
+    # 기존 config를 불러오되 일부 항목만 현재 값으로 덮어씀
+
     saved_cfg = cfg.copy()
     # Fetch path to this file to get base path
     current_path = os.path.dirname(os.path.realpath(__file__))
@@ -61,25 +66,37 @@ def get_resume_adaptive(cfg, model_kwargs):
 
     resume_path = os.path.join(root_dir, cfg.general.resume)
 
+    # 지정된 체크포인트로부터 diffusion 모델을 불러옴 (이전 학습 결과)
     if cfg.model.type == 'discrete':
         model = DiscreteDenoisingDiffusion.load_from_checkpoint(resume_path, **model_kwargs)
     else:
         model = LiftedDenoisingDiffusion.load_from_checkpoint(resume_path, **model_kwargs)
     new_cfg = model.cfg
 
-    for category in cfg:
+    for category in cfg: # 현재 cfg에 있는 모든 키들을 복원된 new_cfg에 덮어씀
         for arg in cfg[category]:
             new_cfg[category][arg] = cfg[category][arg]
 
     new_cfg.general.resume = resume_path
-    new_cfg.general.name = new_cfg.general.name + '_resume'
+    new_cfg.general.name = new_cfg.general.name + '_resume' # 실행 이름에 _resume을 붙이고, 재개 경로 저장
 
-    new_cfg = cfg.update_config_with_new_keys(new_cfg, saved_cfg)
+    new_cfg = cfg.update_config_with_new_keys(new_cfg, saved_cfg) # 복원된 config에 빠진 새로운 키들을 현재 config에서 가져와 추가함 (오류 방지)
     return new_cfg, model
 
 
 def setup_wandb(cfg):
-    config_dict = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+    # 현재 구성(config)을 기반으로 wandb 프로젝트를 초기화하고 .txt 파일들을 자동 저장하도록 설정
+    config_dict = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True) # OmegaConf 객체(cfg)를 일반 Python 딕셔너리로 변환
+    # resolve=True: ${var} 형태의 변수 참조를 실제 값으로 평가
+    # throw_on_missing=True: 빠진 항목이 있으면 오류 발생
+
+    # 항목	                     설명
+    # name	                     wandb에서 이 실행(run)의 이름
+    # project	                 wandb 프로젝트 이름 (graph_ddm_qm9 등)
+    # config	                 현재 Hydra config 전체를 wandb에 기록
+    # settings._disable_stats	 시스템 자원 통계 수집 비활성화 (성능 최적화용)
+    # reinit=True	             여러 번 wandb.init() 호출 시에도 재초기화 허용
+    # mode	"online", "offline" 또는 "disabled" 가능 (cfg.general.wandb)
     kwargs = {'name': cfg.general.name, 'project': f'graph_ddm_{cfg.dataset.name}', 'config': config_dict,
               'settings': wandb.Settings(_disable_stats=True), 'reinit': True, 'mode': cfg.general.wandb}
     wandb.init(**kwargs)
@@ -89,9 +106,10 @@ def setup_wandb(cfg):
 
 @hydra.main(version_base='1.1', config_path='../configs', config_name='config')
 def main(cfg: DictConfig):
+    ##### 데이터셋 준비 #####
     dataset_config = cfg["dataset"]
 
-    if dataset_config["name"] in ['sbm', 'comm-20', 'planar']:
+    if dataset_config["name"] in ['sbm', 'comm-20', 'planar']: # SPECTRE 기반 비분자 그래프
         if dataset_config['name'] == 'sbm':
             datamodule = SBMDataModule(cfg)
             sampling_metrics = SBMSamplingMetrics(datamodule.dataloaders)
@@ -121,7 +139,7 @@ def main(cfg: DictConfig):
                         'sampling_metrics': sampling_metrics, 'visualization_tools': visualization_tools,
                         'extra_features': extra_features, 'domain_features': domain_features}
 
-    elif dataset_config["name"] in ['qm9', 'guacamol', 'moses']:
+    elif dataset_config["name"] in ['qm9', 'guacamol', 'moses']: # 분자 그래프 데이터셋
         if dataset_config["name"] == 'qm9':
             datamodule = qm9_dataset.QM9DataModule(cfg)
             dataset_infos = qm9_dataset.QM9infos(datamodule=datamodule, cfg=cfg)
@@ -167,6 +185,9 @@ def main(cfg: DictConfig):
     else:
         raise NotImplementedError("Unknown dataset {}".format(cfg["dataset"]))
 
+    ##### 학습/테스트 재개 처리 #####
+    # test_only: 테스트만 수행 (고정 config)
+    # resume: 학습 재개 (config 수정 가능)
     if cfg.general.test_only:
         # When testing, previous configuration is fully loaded
         cfg, _ = get_resume(cfg, model_kwargs)
@@ -176,15 +197,20 @@ def main(cfg: DictConfig):
         cfg, _ = get_resume_adaptive(cfg, model_kwargs)
         os.chdir(cfg.general.resume.split('checkpoints')[0])
 
+    ##### WandB 설정 #####
     utils.create_folders(cfg)
     cfg = setup_wandb(cfg)
 
+    ##### 모델 생성 #####
     if cfg.model.type == 'discrete':
         model = DiscreteDenoisingDiffusion(cfg=cfg, **model_kwargs)
     else:
         model = LiftedDenoisingDiffusion(cfg=cfg, **model_kwargs)
 
+    ##### 체크포인트 및 EMA 콜백 설정 #####
     callbacks = []
+
+    # "val/epoch_NLL" 값이 가장 낮을 때의 모델을 저장
     if cfg.train.save_model:
         checkpoint_callback = ModelCheckpoint(dirpath=f"checkpoints/{cfg.general.name}",
                                               filename='{epoch}',
@@ -205,6 +231,9 @@ def main(cfg: DictConfig):
         print("[WARNING]: Run is called 'test' -- it will run in debug mode on 20 batches. ")
     elif name == 'debug':
         print("[WARNING]: Run is called 'debug' -- it will run with fast_dev_run. ")
+
+    ##### Trainer 실행 #####
+    print("cfg.general.gpus",cfg.general.name)
     trainer = Trainer(gradient_clip_val=cfg.train.clip_grad,
                       accelerator='gpu' if torch.cuda.is_available() and cfg.general.gpus > 0 else 'cpu',
                       devices=cfg.general.gpus if torch.cuda.is_available() and cfg.general.gpus > 0 else None,
@@ -219,7 +248,7 @@ def main(cfg: DictConfig):
                       enable_progress_bar=False,
                       callbacks=callbacks,
                       logger=[])
-
+    ##### 학습/테스트 실행 #####
     if not cfg.general.test_only:
         trainer.fit(model, datamodule=datamodule, ckpt_path=cfg.general.resume)
         if cfg.general.name not in ['debug', 'test']:

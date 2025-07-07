@@ -78,7 +78,7 @@ class QM9Dataset(InMemoryDataset):
             self.file_idx = 2
         self.remove_h = remove_h
         super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[self.file_idx])
+        self.data, self.slices = torch.load(self.processed_paths[self.file_idx], weights_only=False)
 
     @property
     def raw_file_names(self):

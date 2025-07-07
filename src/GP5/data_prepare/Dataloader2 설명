@@ -1,0 +1,21 @@
+DataLoader는 내부적으로 다음 단계를 수행합니다:
+
+dataset_ex_prob에서 __getitem__()을 호출하여 샘플을 가져옵니다.
+지정된 batch_size=8을 기준으로 8개의 샘플을 묶어 배치를 생성합니다.
+collate_fn을 호출하여 배치 데이터를 병합 및 패딩 처리합니다.
+
+    def __getitem__(self, idx):
+        print(f"Fetching sample index: {idx}")
+        return self.graphs[idx], self.targets[idx], idx
+    getitem이 이렇기 때문에
+collate_fn의 인자로 전달되는 batch는 다음과 같은 형태로 구성됩니다:
+[
+    (graph_0, target_0, index_0),
+    (graph_1, target_1, index_1),
+    (graph_2, target_2, index_2),
+    (graph_3, target_3, index_3),
+    (graph_4, target_4, index_4),
+    (graph_5, target_5, index_5),
+    (graph_6, target_6, index_6),
+    (graph_7, target_7, index_7),
+]

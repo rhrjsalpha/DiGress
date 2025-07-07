@@ -1,4 +1,6 @@
 import torch
+import os
+import csv
 from torch import Tensor
 import torch.nn as nn
 from torchmetrics import Metric, MeanSquaredError, MetricCollection
@@ -7,6 +9,14 @@ import wandb
 from src.metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchMSE, SumExceptBatchKL, CrossEntropyMetric, \
     ProbabilityMetric, NLL
 
+def log_to_csv(log_dict, file_path='logs/val_metrics.csv'):
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    file_exists = os.path.isfile(file_path)
+    with open(file_path, 'a', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=log_dict.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(log_dict)
 
 class NodeMSE(MeanSquaredError):
     def __init__(self, *args):
@@ -104,7 +114,8 @@ class TrainLossDiscrete(nn.Module):
                       "train_loss/X_CE": self.edge_loss.compute() if true_X.numel() > 0 else -1,
                       "train_loss/E_CE": loss_E if true_E.numel() > 0 else -1,
                       "train_loss/y_CE": self.node_loss.compute() if true_y.numel() > 0 else -1}
-            wandb.log(to_log, commit=True)
+            log_to_csv(to_log, file_path="logs/train_batch.csv")
+            #wandb.log(to_log, commit=True)
         return loss_X + self.lambda_train[0] * loss_E + self.lambda_train[1] * loss_y
 
     def reset(self):
@@ -119,7 +130,8 @@ class TrainLossDiscrete(nn.Module):
         to_log = {"train_epoch/x_CE": epoch_node_loss,
                   "train_epoch/E_CE": epoch_edge_loss,
                   "train_epoch/y_CE": epoch_y_loss}
-        wandb.log(to_log, commit=False)
+        log_to_csv(to_log, file_path="logs/train_epoch.csv")
+        #wandb.log(to_log, commit=False)
 
         print(f"Epoch {current_epoch} finished: X: {epoch_node_loss :.2f} -- E: {epoch_edge_loss :.2f} "
               f"y: {epoch_y_loss :.2f} -- {time.time() - start_epoch_time:.1f}s ")

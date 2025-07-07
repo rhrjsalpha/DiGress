@@ -3,7 +3,7 @@ from torchmetrics import Metric, MetricCollection
 from torch import Tensor
 import wandb
 import torch.nn as nn
-
+from src.utils import log_to_csv
 
 class CEPerClass(Metric):
     full_state_update = False
@@ -168,7 +168,8 @@ class TrainMolecularMetricsDiscrete(nn.Module):
             for key, val in self.train_bond_metrics.compute().items():
                 to_log['train/' + key] = val.item()
 
-            wandb.log(to_log, commit=False)
+            # wandb.log(to_log, commit=False)
+            log_to_csv(to_log, file_path="logs/train_batch_metrics.csv")
 
     def reset(self):
         for metric in [self.train_atom_metrics, self.train_bond_metrics]:
@@ -183,7 +184,8 @@ class TrainMolecularMetricsDiscrete(nn.Module):
             to_log['train_epoch/' + key] = val.item()
         for key, val in epoch_bond_metrics.items():
             to_log['train_epoch/' + key] = val.item()
-        wandb.log(to_log, commit=False)
+        #wandb.log(to_log, commit=False)
+        log_to_csv(to_log, file_path="logs/train_epoch_metrics.csv")
 
         for key, val in epoch_atom_metrics.items():
             epoch_atom_metrics[key] = val.item()
