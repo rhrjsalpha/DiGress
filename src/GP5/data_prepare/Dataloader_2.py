@@ -175,29 +175,29 @@ class SMILESDataset(Dataset):
             "edge_input": edge_input,
         }
 
-    def generate_edge_input(self, spatial_pos, attn_edge_type, max_dist):
-        """
-        Generate edge_input tensor for multi-hop edges.
+    #def generate_edge_input(self, spatial_pos, attn_edge_type, max_dist):
+    #    """
+    #    Generate edge_input tensor for multi-hop edges.
 
-        Args:
-            spatial_pos: Shortest path distance matrix.
-            attn_edge_type: Attention edge type tensor.
-            max_dist: Maximum allowed distance for multi-hop edges.
+    #    Args:
+    #        spatial_pos: Shortest path distance matrix.
+    #        attn_edge_type: Attention edge type tensor.
+    #        max_dist: Maximum allowed distance for multi-hop edges.
 
-        Returns:
-            edge_input tensor.
-        """
-        num_nodes = spatial_pos.size(0)
-        edge_input = torch.zeros((num_nodes, num_nodes, max_dist, attn_edge_type.size(-1)), dtype=torch.long)
+    #    Returns:
+    #        edge_input tensor.
+    #    """
+    #    num_nodes = spatial_pos.size(0)
+    #    edge_input = torch.zeros((num_nodes, num_nodes, max_dist, attn_edge_type.size(-1)), dtype=torch.long)
 
-        for i in range(num_nodes):
-            for j in range(num_nodes):
-                if 1 <= spatial_pos[i, j] <= max_dist:  # Only consider paths within max_dist
-                    edge_input[i, j, spatial_pos[i, j] - 1] = attn_edge_type[i, j]
+    #    for i in range(num_nodes):
+    #        for j in range(num_nodes):
+    #            if 1 <= spatial_pos[i, j] <= max_dist:  # Only consider paths within max_dist
+    #                edge_input[i, j, spatial_pos[i, j] - 1] = attn_edge_type[i, j]
 
-        # Add edge encoding
-        edge_input = self.edge_encoder(edge_input)  # Encode edge_input using embedding
-        return edge_input
+    #    # Add edge encoding
+    #    edge_input = self.edge_encoder(edge_input)  # Encode edge_input using embedding
+    #    return edge_input
 
     def generate_edge_input(self, spatial_pos, attn_edge_type, max_dist):
         """
@@ -467,6 +467,61 @@ def ev_to_nm(energy_ev):
 def nm_to_ev(wavelength_nm):
     """ 나노미터(nm)를 전자볼트(eV)로 변환 """
     return 1239.841984 / wavelength_nm
+
+
+def encode_global(features: dict, schema: dict) -> torch.Tensor:
+    """
+    임의의 전역 특성(features)을 하나의 Dense 벡터로 인코딩.
+
+    Parameters
+    ----------
+    features : dict
+        {"solvent": 3, "temp": 298, "pressure": 1.0, ...}
+    schema : dict
+        각 특성의 인코딩 규칙.
+        형식:
+        {
+            "solvent":  {"type": "onehot",     "num_classes": 8},
+            "temp":     {"type": "continuous", "mean": 298, "std": 50},
+            "pressure": {"type": "continuous", "min": 0.8, "max": 1.2},
+            ...
+        }
+
+    Returns
+    -------
+    torch.Tensor  # shape = (총 채널 수,)
+    """
+    chunks = []
+    for name, rule in schema.items():
+        value = features[name]
+
+        if rule["type"] == "onehot":
+            # 단일 정수 → one-hot
+            vec = F.one_hot(torch.tensor(value),
+                            num_classes=rule["num_classes"]).float()
+            chunks.append(vec)
+
+        elif rule["type"] == "multihot":
+            # 다중 라벨(list[int]) → multi-hot
+            vec = torch.zeros(rule["num_classes"], dtype=torch.float)
+            vec[torch.tensor(value, dtype=torch.long)] = 1.0
+            chunks.append(vec)
+
+        elif rule["type"] == "continuous":
+            # 연속값 스케일링 (표준화 또는 min-max 둘 다 지원)
+            if "mean" in rule and "std" in rule:
+                norm = (value - rule["mean"]) / rule["std"]
+            elif "min" in rule and "max" in rule:
+                norm = (value - rule["min"]) / (rule["max"] - rule["min"])
+            else:
+                raise ValueError(f"continuous rule for '{name}' "
+                                 "must have (mean,std) or (min,max)")
+            chunks.append(torch.tensor([norm], dtype=torch.float))
+
+        else:
+            raise ValueError(f"Unknown encode type: {rule['type']}")
+
+    return torch.cat(chunks, dim=0)
 
 # Example Usage
 if __name__ == "__main__":

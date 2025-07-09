@@ -470,23 +470,26 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         E = noisy_data['E_t']
         y = noisy_data['t']
 
-        with torch.enable_grad():
-            x_in = X.float().detach().requires_grad_(True)
+        with torch.enable_grad(): # grad를 구하려면 requires_grad=True로 설정해야 함.
+            x_in = X.float().detach().requires_grad_(True) # detach()로 원래 그래프에서 끊어 주면 diffusion 모델의 파라미터에는 기울기가 흘러가지 않음(오직 Reg-guidance 용도).
             e_in = E.float().detach().requires_grad_(True)
 
-            pred = self.guidance_model.model(x_in, e_in, y, node_mask)
+            pred = self.guidance_model.model(x_in, e_in, y, node_mask) # 사전-학습된 Regressor noisy 그래프를 넣어 목표 속성 예측 ŷ 를 얻음.
 
-            # normalize target
-            target = target.type_as(x_in)
+            ### normalize target ###
+            target = target.type_as(x_in) # 목표 y_G 을 float32 (x in과 같은 type)로 캐스팅
 
-            mse = loss(pred.y, target.repeat(pred.y.size(0), 1))
+            mse = loss(pred.y, target.repeat(pred.y.size(0), 1)) # 배치마다 MSE 계산
 
             t_int = int(t[0].item() * 500)
             if t_int % 10 == 0:
                 print(f'Regressor MSE at step {t_int}: {mse.item()}')
             wandb.log({'Guidance MSE': mse})
 
-            # calculate gradient of mse with respect to x and e
+            ### calculate gradient of mse with respect to x and e ###
+            # MSE를 각 원-핫 노드 좌표로 미분. 반환 모양 (bs, n, d_x)
+            # ⇒ 노드 i (또는 edge ij)가 카테고리 k(예: C, O, N…)가 되었을 때 MSE가 얼마나 변하는지.
+            #  ⟨∇_{x_i^t}‖ŷ − y_G‖² , onehot(x) − x_i^t⟩ 에서 ∇_{x_i^t}‖ŷ − y_G‖² 이 부분 #
             grad_x = torch.autograd.grad(mse, x_in, retain_graph=True)[0]
             grad_e = torch.autograd.grad(mse, e_in)[0]
 
@@ -506,7 +509,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             return mask_grad_x, mask_grad_e
 
     def sample_p_zs_given_zt(self, s, t, X_t, E_t, y_t, node_mask, input_properties):
-        """Samples from zs ~ p(zs | zt). Only used during sampling."""
+        """Samples from zs ~ p(zs | zt). Only used during sampling. Gt -> Gt-1"""
         bs, n, dxs = X_t.shape
         beta_t = self.noise_schedule(t_normalized=t)  # (bs, 1)
         alpha_s_bar = self.noise_schedule.get_alpha_bar(t_normalized=s)
@@ -522,10 +525,13 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         extra_data = self.compute_extra_data(noisy_data)
         pred = self.forward(noisy_data, extra_data, node_mask)
 
-        # Normalize predictions
+        ### Normalize predictions ###
+        # pred_X : “원래” 모델이 Gᵗ 를 보고
+        # 각 노드가 어떤 클래스로 돌아갈지 예측한 softmax.
         pred_X = F.softmax(pred.X, dim=-1)  # bs, n, d0
         pred_E = F.softmax(pred.E, dim=-1)  # bs, n, n, d0
 
+        # 베이지안 보정
         p_s_and_t_given_0_X = diffusion_utils.compute_batched_over0_posterior_distribution(X_t=X_t,
                                                                                            Qt=Qt.X,
                                                                                            Qsb=Qsb.X,
@@ -535,6 +541,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                                                                                            Qt=Qt.E,
                                                                                            Qsb=Qsb.E,
                                                                                            Qtb=Qtb.E)
+
         # Dim of these two tensors: bs, N, d0, d_t-1
         weighted_X = pred_X.unsqueeze(-1) * p_s_and_t_given_0_X         # bs, n, d0, d_t-1
         unnormalized_prob_X = weighted_X.sum(dim=2)                     # bs, n, d_t-1
@@ -552,18 +559,32 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # Regressor사용하여 조건부 생성 #
         lamb = self.args.guidance.lambda_guidance
 
-        grad_x, grad_e = self.cond_fn(noisy_data, node_mask, input_properties) # Regressor Gradient
+        grad_x, grad_e = self.cond_fn(noisy_data, node_mask, input_properties) # Regressor Gradient : ∇_{x_i^t}‖ŷ − y_G‖²
 
-        p_eta_x = torch.softmax(- lamb * grad_x, dim=-1) # λ 〈∇‖ŷ – y₍G₎‖² , onehot(x) – xᵗ〉 항을 소프트-맥스로 변환
-        p_eta_e = torch.softmax(- lamb * grad_e, dim=-1)
+        ### 〈∇‖ŷ – y₍G₎‖² , onehot(x) – xᵗ〉내적 부분 : 논문의 식 참고하여 작성 ###
+        # 코드에서는 후보별 내적을 한 번에 계산하지 않고  softmax 에 직접 넣어
+        # onehot(x) : G t-1에서의 노드 후보들
+        # onehot(x) – xᵗ : t 시점의 x 가 t-1 시점에서 다른 원자가 되는 것을 one hot vector로 표현 한 것
+        # C = 001, N = 010, O = 100 이라고 하면 t-1 시점의 x를 의미하는 onehot 에 이 3가지가 다 올 수 있음
+        # 하지만 코드에서는 이 후보별 내적을 한번에 계산 하지 않고 Softmax
+        # t 시점에서 xi = t 라 가정
+        # <g , x(t+1)-x(i,t)> = g(x) - g(c)
+        # 1. softmax 에 넣을 경우
+        # exp( -λ (g(x) - g(c)) ) = exp(-λ(g(x)) / exp(-λ(g(c))
+
+        # 모든 𝑥 에 대해 분모 exp(-λ(g(c))는 같음 모든 Softmax에서 상쇄되어 사라지게 됨
+        # 2. p_tilde(x) = exp(-λ(g(x)) / Σ_{x'} exp(-λ(g(x'))
+        # 즉 softmax 사용시 내적후 Gt와 Gt-1 시점 사이의 차이를 계산할 필요가 없음
+        p_eta_x = torch.softmax(- lamb * grad_x, dim=-1) # 1. λ 〈∇‖ŷ – y₍G₎‖² , onehot(x) – xᵗ〉 항을 소프트-맥스로 변환
+        p_eta_e = torch.softmax(- lamb * grad_e, dim=-1) # 1.
 
         prob_X_unnormalized = p_eta_x * prob_X # Guided posterior
         prob_X_unnormalized[torch.sum(prob_X_unnormalized, dim=-1) == 0] = 1e-7
-        prob_X = prob_X_unnormalized / torch.sum(prob_X_unnormalized, dim=-1, keepdim=True)
+        prob_X = prob_X_unnormalized / torch.sum(prob_X_unnormalized, dim=-1, keepdim=True) # 2.
 
         prob_E_unnormalized = p_eta_e * prob_E
         prob_E_unnormalized[torch.sum(prob_E_unnormalized, dim=-1) == 0] = 1e-7
-        prob_E = prob_E_unnormalized / torch.sum(prob_E_unnormalized, dim=-1, keepdim=True)
+        prob_E = prob_E_unnormalized / torch.sum(prob_E_unnormalized, dim=-1, keepdim=True) # 2.
 
         assert ((prob_X.sum(dim=-1) - 1).abs() < 1e-4).all()
         assert ((prob_E.sum(dim=-1) - 1).abs() < 1e-4).all()
