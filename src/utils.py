@@ -280,7 +280,8 @@ class PlaceHolder:
         # 데이터 타입 (dtype)과 디바이스를 주어진 텐서 x와 같게 맞춤
         self.X = self.X.type_as(x)
         self.E = self.E.type_as(x)
-        self.y = self.y.type_as(x)
+        if self.y is not None:
+            self.y = self.y.type_as(x)
         return self
 
     def mask(self, node_mask, collapse=False):

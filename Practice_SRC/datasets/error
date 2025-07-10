@@ -1,0 +1,39 @@
+C:\Users\kogun\PycharmProjects\DiGress\.venv\Scripts\python.exe C:\Users\kogun\PycharmProjects\DiGress\Practice_SRC\datasets\handle_broken_molecules.py
+C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\init.py:511: UserWarning: Initializing zero-element tensors is a no-op
+  warnings.warn("Initializing zero-element tensors is a no-op")
+Traceback (most recent call last):
+  File "C:\Users\kogun\PycharmProjects\DiGress\Practice_SRC\datasets\handle_broken_molecules.py", line 148, in <module>
+    model = DiscreteDenoisingDiffusion(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\src\diffusion_model_discrete.py", line 96, in __init__
+    self.model = GraphTransformer(n_layers=cfg.model.n_layers, # 몇개의 Trasnformer Layer 사용할 것인지
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\src\models\transformer_model.py", line 236, in __init__
+    self.tf_layers = nn.ModuleList([XEyTransformerLayer(dx=hidden_dims['dx'],
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\src\models\transformer_model.py", line 239, in <listcomp>
+    n_head=hidden_dims['n_head'],
+           ~~~~~~~~~~~^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\omegaconf\dictconfig.py", line 375, in __getitem__
+    self._format_and_raise(key=key, value=None, cause=e)
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\omegaconf\base.py", line 231, in _format_and_raise
+    format_and_raise(
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\omegaconf\_utils.py", line 899, in format_and_raise
+    _raise(ex, cause)
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\omegaconf\_utils.py", line 797, in _raise
+    raise ex.with_traceback(sys.exc_info()[2])  # set env var OC_CAUSE=1 for full trace
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\omegaconf\dictconfig.py", line 369, in __getitem__
+    return self._get_impl(key=key, default_value=_DEFAULT_MARKER_)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\omegaconf\dictconfig.py", line 442, in _get_impl
+    node = self._get_child(
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\omegaconf\basecontainer.py", line 73, in _get_child
+    child = self._get_node(
+            ^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\omegaconf\dictconfig.py", line 480, in _get_node
+    raise ConfigKeyError(f"Missing key {key!s}")
+omegaconf.errors.ConfigKeyError: Missing key n_head
+    full_key: model.hidden_dims.n_head
+    object_type=dict
