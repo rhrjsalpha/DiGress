@@ -44,3 +44,14 @@ Graphormer : CLS 역할의 [VNode] 1 개만.
 Graphormer-IR : 기존 [VNode] + 목적에 맞춘 추가 global node를 별도로 삽입.
 
 따라서 Graphormer-IR은 CLS/[VNode]에 정보를 억지로 우겨 넣지 않고, 전역 메타데이터마다 전용 global node를 새로 만들어 attention으로 분자 전역에 전달하는 디자인을 채택합니다.
+
+## 추가
+🔍 왜 ‘edge flag’까지 넣을까?
+원자 ↔ global node 간 연결은 물리적 결합이 아니므로, 기존 결합 타입 one-hot만으로는 구분하기 어려움.
+
+논문은 “edge is connected to the global phase node” 여부를 별도 클래스에 넣어 c<sub>ij</sub> 편향에서 차별화했다 stienstra-et-al-2024-gr….
+
+🧮 거리 bias는 어떻게 계산되나?
+Graphormer-IR 구현은 최단거리 계산 시 global node를 우회 경로에 쓰지 않도록 마스킹해 원자-원자 본래 거리를 보존하고,
+global node와의 거리는 상수 1로 주어 b<sub>ϕ</sub>(global,i)=emb(1) 만 사용합니다.
+이렇게 하면 거대 그래프가 한 번에 수렴되는 대신, “환경 → 원자” 정보만 직접 전달됩니다.

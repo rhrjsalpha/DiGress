@@ -107,6 +107,7 @@ class GraphAttnBias(nn.Module):
                 num_edge_dis * num_heads * num_heads, 1
             )
 
+        ## Edge Flag / 가상 거리 (Virtual Distance) 정의 및 적용 ##
         self.graph_token_virtual_distance = nn.Embedding(1, num_heads)
         self.new_global_node_virtual_distance = nn.Embedding(1, num_heads) # Added for new global node
 
@@ -161,9 +162,10 @@ class GraphAttnBias(nn.Module):
         batch_size, num_heads, num_nodes, _ = graph_attn_bias.size()
 
         # 가상 노드를 포함하도록 크기 확장 (CLS + New Global Node + Nodes)
-        new_bias = torch.zeros(batch_size, num_heads, num_nodes + 2, num_nodes + 2, device=graph_attn_bias.device)
+        new_bias = torch.full((batch_size, num_heads, num_nodes + 2, num_nodes + 2), -1e9, device=graph_attn_bias.device)
         new_bias[:, :, 2:, 2:] = graph_attn_bias  # 기존 bias를 새로운 위치 (인덱스 2부터)에 복사
 
+        ### 가상거리를 `new_bias` 행렬에 적용하는 부분 ###
         # CLS/VNode (인덱스 0)와의 거리 추가
         t_cls = self.graph_token_virtual_distance.weight.view(1, self.num_heads, 1)
         new_bias[:, :, 1:, 0] = t_cls  # CLS -> New Global Node, Nodes
@@ -223,7 +225,9 @@ class GraphAttnBias(nn.Module):
         #print("new_bias += edge_input", new_bias.shape)
 
         #print("attn_bias.shape", attn_bias.shape)
-        new_bias[:, :, 2:, 2:] += attn_bias.unsqueeze(1)
+        
         #print("new_bias += attn_bias", new_bias.shape)
 
-        return new_bias
+        
+        
+        return new_bias.view(batch_size * num_heads, num_nodes + 2, num_nodes + 2)

@@ -77,7 +77,7 @@ def cross_validate_model(
         dict: Results containing CV metrics and full dataset metrics.
     """
     if DATASET is None:
-        dataset = SMILESDataset(csv_file=dataset_path, attn_bias_w=1.0, target_type=target_type, nominal_feature_vocab=nominal_dims, global_feature_names=global_feature_names)
+        dataset = SMILESDataset(csv_file=dataset_path, attn_bias_w=1.0, target_type=target_type, nominal_feature_vocab=nominal_dims, global_feature_names=global_feature_names, ex_normalize='ex_min_max', prob_normalize='prob_min_max')
     else:
         dataset = DATASET
 
@@ -570,7 +570,7 @@ def cross_validate_model(
     final_results["weight_prob_history"] = cv_metrics["CV_weight_prob"]
 
     if TEST_DATASET == None:
-        test_dataset = SMILESDataset(csv_file=testset_path, attn_bias_w=1.0, target_type=target_type, nominal_feature_vocab=PREDEFINED_VOCAB, global_feature_names=global_feature_names)
+        test_dataset = SMILESDataset(csv_file=testset_path, attn_bias_w=1.0, target_type=target_type, nominal_feature_vocab=PREDEFINED_VOCAB, global_feature_names=global_feature_names, ex_normalize='ex_min_max', prob_normalize='prob_min_max')
     else:
         test_dataset = TEST_DATASET
 

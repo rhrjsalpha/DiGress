@@ -278,6 +278,8 @@ class SMILESDataset(Dataset):
 
     @staticmethod
     def compute_shortest_paths(adj):
+        # 분자들 내 원자 사이의 최단 거리 계산,
+        # 가상 노드, 글로벌 노드등은 Graphormer 내에 존재하며 이들과 원자 사이의 거리는 Grahpormer 내에서 1로 처리됨
         num_nodes = adj.shape[0]
         dist = np.full((num_nodes, num_nodes), np.inf)
         np.fill_diagonal(dist, 0)

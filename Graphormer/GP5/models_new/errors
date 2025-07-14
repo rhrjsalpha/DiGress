@@ -1,46 +1,22 @@
-C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_train_eVOsc_GradNorm_2loss_notearlystop.py:102: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
-  scaler = GradScaler()
 Traceback (most recent call last):
-  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_train_eVOsc_GradNorm_2loss_notearlystop.py", line 513, in <module>
-    final_loss = train_model_ex_porb(
-                 ^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_train_eVOsc_GradNorm_2loss_notearlystop.py", line 141, in train_model_ex_porb
-    outputs = model(batched_data, targets=targets, target_type=target_type)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models\graphormer.py", line 89, in forward
-    node_embeddings, _ = self.encoder(batched_data)
-                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\modules\graphormer_graph_encoder.py", line 105, in forward
-    x, _ = layer(x, self_attn_bias=attn_bias)
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_CV_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 724, in <module>
+    cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../graphormer_data/train_50_with_features.csv", testset_path="../../graphormer_data/test_10_with_features.csv",
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_CV_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 149, in cross_validate_model
+    for batch in train_loader:
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\utils\data\dataloader.py", line 733, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\utils\data\dataloader.py", line 789, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\modules\graphormer_graph_encoder_layer.py", line 82, in forward
-    x, attn = self.self_attn(
-              ^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\modules\multihead_attention.py", line 115, in forward
-    attn_weights += attn_bias.view(bsz * self.num_heads, tgt_len, -1)
-                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: shape '[400, 36, -1]' is invalid for input of size 547600
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 55, in fetch
+    return self.collate_fn(data)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_CV_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 139, in <lambda>
+    collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs),
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_QMData.py", line 342, in collate_fn
+    raise ValueError(f"Unknown ex_normalize: {ds.ex_normalize} \n Avaliable list is ex_min_max, ex_std, ex")
+ValueError: Unknown ex_normalize: None 
+ Avaliable list is ex_min_max, ex_std, ex
