@@ -541,14 +541,18 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
     # 이것이 "random timestep training", DDPM의 핵심 전략 중 하나
     ####################################
 
-    def apply_noise(self, X, E, y, node_mask): # 위쪽에 train, val, test 쪽에서 사용됨
+    def apply_noise(self, X, E, y, node_mask, t_int=None): # 위쪽에 train, val, test 쪽에서 사용됨
         """ Sample noise and apply it to the data. """
 
         ### Sample a timestep t. | diffusion 시점 t 샘플링
         ### When evaluating, the loss for t=0 is computed separately | 학습 중에는 t=0∼T, 테스트/validation 시에는 t=1∼T만 (t=0은 평가용)
-        lowest_t = 0 if self.training else 1
-        # lowest_t ~ t+1 사이의 정수중 랜덤/ 각 샘플에 대해 1개의 t값을 할당 : size=(X.size(0), 1) : batch size,1
-        t_int = torch.randint(lowest_t, self.T + 1, size=(X.size(0), 1), device=X.device).float()  # (bs, 1) | lowest_t 에서 self.T + 1 까지
+        if t_int is None:
+            lowest_t = 0 if self.training else 1
+            # lowest_t ~ t+1 사이의 정수중 랜덤/ 각 샘플에 대해 1개의 t값을 할당 : size=(X.size(0), 1) : batch size,1
+            t_int = torch.randint(lowest_t, self.T + 1, size=(X.size(0), 1), device=X.device).float()  # (bs, 1) | lowest_t 에서 self.T + 1 까지
+        else:
+            t_int = t_int.float().unsqueeze(1) # Ensure it's (bs, 1) and float
+
         s_int = t_int - 1 # 현재 시점보다 이전시점
 
         t_float = t_int / self.T

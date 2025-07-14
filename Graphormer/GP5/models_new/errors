@@ -1,0 +1,34 @@
+evaluating on test set
+C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_3.py:334: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.detach().clone() or sourceTensor.detach().clone().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  min_val = torch.tensor(min_max[0]).to(ex.device)  # train_min 값
+C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_3.py:335: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.detach().clone() or sourceTensor.detach().clone().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  max_val = torch.tensor(min_max[1]).to(ex.device)  # train_max 값
+Traceback (most recent call last):
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_CV_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 733, in <module>
+    cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../data/train_50_with_features.csv", testset_path="../../data/test_10_with_features.csv",
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_CV_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 583, in cross_validate_model
+    test_results = evaluate_on_test_set(model, test_loader, device, target_type)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_CV_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 603, in evaluate_on_test_set
+    outputs = model(batch_data_for_model, targets=targets, target_type=target_type)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_3.py", line 105, in forward
+    global_features_embedding = self.global_feature_projection(global_features)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\linear.py", line 125, in forward
+    return F.linear(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: mat1 and mat2 shapes cannot be multiplied (10x6 and 7x128)

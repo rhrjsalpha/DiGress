@@ -152,15 +152,17 @@ def build_molecule(atom_types, edge_types, atom_decoder, verbose=False):
 
 
 def build_molecule_with_partial_charges(atom_types, edge_types, atom_decoder, verbose=False):
-    if verbose:
-        print("\nbuilding new molecule")
-
     mol = Chem.RWMol()
-    for atom in atom_types:
-        a = Chem.Atom(atom_decoder[atom.item()])
+    for atom_type_tensor in atom_types:
+        atom_idx = atom_type_tensor.item()
+        if atom_idx == 0: # Handle masked/padding atoms
+            a = Chem.Atom('C') # Use Carbon as a placeholder
+            a.SetBoolProp("is_masked", True)
+        else:
+            a = Chem.Atom(atom_decoder[atom_idx])
         mol.AddAtom(a)
         if verbose:
-            print("Atom added: ", atom.item(), atom_decoder[atom.item()])
+            print("Atom added: ", atom_idx, atom_decoder.get(atom_idx, 'C'))
     edge_types = torch.triu(edge_types)
     all_bonds = torch.nonzero(edge_types)
 
