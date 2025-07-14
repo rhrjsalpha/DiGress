@@ -54,13 +54,11 @@ class GraphormerModel(nn.Module):
             pre_layernorm=config.get("pre_layernorm", False),
             q_noise=config.get("q_noise", 0.0),
             qn_block_size=config.get("qn_block_size", 8),
+            global_feature_dim=config.get("global_feature_dim", 0), # Pass global_feature_dim
         )
 
         # --- MODIFICATION START ---
-        # Add a linear layer for global features # 전역 특성(Solvent, Temperature, Pressure)을 처리하기 위한 선형 레이어 추가
-        # global_feature_dim is now passed directly in config
-        global_feature_dim = config.get("global_feature_dim", 0) 
-        self.global_feature_projection = nn.Linear(global_feature_dim, self.embedding_dim)
+        # Removed global_feature_projection as it's now handled within GraphNodeFeature
         # --- MODIFICATION END ---
 
         if config.get("out_of_training", False):
@@ -72,8 +70,7 @@ class GraphormerModel(nn.Module):
         else:
             self.output_size = None
             # --- MODIFICATION START ---
-            # Output layer will now take concatenated embedding_dim * 2 (graph + global) # 그래프 임베딩과 전역 특성 임베딩을 연결한 후의 차원을 고려하여 출력 레이어 초기화
-            # This will be dynamically initialized in forward pass, but the input size will be embedding_dim * 2
+            # Output layer will now take embedding_dim (from CLS token) # 그래프 임베딩과 전역 특성 임베딩을 연결한 후의 차원을 고려하여 출력 레이어 초기화
             self.output_layer = None # Will be initialized dynamically based on combined embedding
             # --- MODIFICATION END ---
 
@@ -100,24 +97,15 @@ class GraphormerModel(nn.Module):
         node_embeddings, _ = self.encoder(batched_data)
 
         # --- MODIFICATION START ---
-        # Process global features # batched_data에서 전역 특성 추출 및 임베딩
-        global_features = batched_data["global_features"]
-        global_features_embedding = self.global_feature_projection(global_features)
-
-        # Concatenate node embeddings and global features embedding # 그래프 노드 임베딩과 전역 특성 임베딩을 연결
-        # Assuming node_embeddings is (batch_size, embedding_dim)
-        # If node_embeddings is (batch_size, num_nodes, embedding_dim), you might need to average or pool it first
-        # For Graphormer, node_embeddings is typically (batch_size, embedding_dim) after CLS token or pooling
-        # Based on graphormer_graph_encoder.py, graph_rep is (B, C), so it's (batch_size, embedding_dim)
-        combined_embedding = torch.cat([node_embeddings, global_features_embedding], dim=1)
+        # Removed global feature processing and concatenation as it's now handled within GraphormerGraphEncoder
         # --- MODIFICATION END ---
 
         #print("target type", target_type, self.target_type)
         # Dynamically initialize the output layer
         if self.output_layer is None:
             # --- MODIFICATION START ---
-            # Output size for the linear layer should be based on the combined embedding dimension # 결합된 임베딩 차원을 기반으로 출력 레이어의 입력 차원 설정
-            combined_embedding_dim = combined_embedding.size(-1)
+            # Output size for the linear layer should be based on the CLS token embedding dimension # 결합된 임베딩 차원을 기반으로 출력 레이어의 입력 차원 설정
+            combined_embedding_dim = node_embeddings.size(-1)
             # --- MODIFICATION END ---
             if targets is not None:
                 # Infer output size dynamically based on target shape
@@ -147,7 +135,7 @@ class GraphormerModel(nn.Module):
 
         # Apply the output layer
         # --- MODIFICATION START ---
-        output = self.output_layer(combined_embedding) # 결합된 임베딩을 출력 레이어에 전달
+        output = self.output_layer(node_embeddings) # 결합된 임베딩을 출력 레이어에 전달
         # --- MODIFICATION END ---
         # Clamp to positive using ReLU or Softplus
         output = nn.functional.softplus(output)

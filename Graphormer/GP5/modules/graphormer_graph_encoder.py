@@ -25,6 +25,7 @@ class GraphormerGraphEncoder(nn.Module):
         pre_layernorm=False,
         q_noise=0.0,
         qn_block_size=8,
+        global_feature_dim=0, # Added global_feature_dim
     ):
         super().__init__()
 
@@ -36,6 +37,7 @@ class GraphormerGraphEncoder(nn.Module):
             num_out_degree=num_out_degree,
             hidden_dim=embedding_dim,
             n_layers=num_encoder_layers,
+            global_feature_dim=global_feature_dim, # Pass global_feature_dim
         )
 
         #print("GraphormerGraphEncoder num_spatial",num_spatial)

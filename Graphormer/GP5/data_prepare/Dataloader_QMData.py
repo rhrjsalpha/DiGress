@@ -76,6 +76,8 @@ class SMILESDataset(Dataset):
         attn_bias_w: float = 0.0,
         ex_normalize: str = None,
         prob_normalize: str = None,
+        nm_dist_mode: str = "hist",  # "hist" | "gauss"
+        nm_gauss_sigma: float = 10.0,  # 가우시안 σ [nm
     ):
         try:
             self.data = pd.read_csv(csv_file, encoding='utf-8')
@@ -103,6 +105,9 @@ class SMILESDataset(Dataset):
         self.global_prob_mean = float(np.mean(prob_data))
         self.global_prob_std = float(np.std(prob_data))
 
+        self.nm_dist_mode = nm_dist_mode
+        self.nm_gauss_sigma = nm_gauss_sigma
+
         self.max_nodes = max_nodes                   # 한 그래프(분자)의 최대 노드 수 패딩 한계
         self.multi_hop_max_dist = multi_hop_max_dist # attention-bias 입력용 multi-hop 거리 한계
         self.target_type = target_type               # "default", "ex_prob", "nm_distribution" 중 선택
@@ -115,7 +120,6 @@ class SMILESDataset(Dataset):
             for g in self.graphs if g["edge_feat"] is not None
         ]) # 모든 분자의 edge_feat 모아서 하나의 텐서로 연결
         self.num_edge_types = torch.unique(all_edge_feats).numel()  # 고유 edge type 개수
-        self.edge_encoder = nn.Embedding(self.num_edge_types + 1, 128, padding_idx=0) # edge type( + padding)을 128-차원 임베딩으로 변환할 레이어
 
         self.graphs = [self.preprocess_graph(g) for g in self.graphs] # Graphormer 입력용 텐서(dict)로 전처리
         self.targets = self.process_targets()
@@ -196,13 +200,30 @@ class SMILESDataset(Dataset):
             nm = (1239.841984 / ex).round().astype(int)
             nm = np.clip(nm, 150, 600)
             out = np.zeros((len(self.data), 451), dtype=np.float32)
-            for i, (row_nm, row_p) in enumerate(zip(nm, prob)):
-                for n_val, p_val in zip(row_nm, row_p):
-                    if 150 <= n_val <= 600:
-                        out[i, n_val - 150] += p_val
-            return torch.tensor(out, dtype=torch.float32)
 
-        raise ValueError(f"Unknown target_type: {self.target_type}")
+            if self.nm_dist_mode == "hist":  # ── 기존 방식
+                for i, (row_nm, row_p) in enumerate(zip(nm, prob)):
+                    for λ, p in zip(row_nm, row_p):
+                        if 150 <= λ <= 600:
+                            out[i, λ - 150] += p
+
+            elif self.nm_dist_mode == "gauss":  # ── 가우시안 브로드닝
+                bins = np.arange(150, 601)  # (451,)
+                σ = self.nm_gauss_sigma
+                for i, (row_nm, row_p) in enumerate(zip(nm, prob)):
+                    spec = np.zeros_like(bins, dtype=np.float32)
+                    for λ, p in zip(row_nm, row_p):
+                        if 150 <= λ <= 600 and p > 0:
+                            kernel = np.exp(-0.5 * ((bins - λ) / σ) ** 2)
+                            kernel /= (kernel.sum() + 1e-8)  # 면적=1
+                            spec += p * kernel
+                    out[i] = spec
+
+            else:
+                raise ValueError(f"Unknown nm_dist_mode: {self.nm_dist_mode}, use 'hist' or 'gauss'")
+            return torch.tensor(out, dtype=torch.float32)
+        else:
+            raise ValueError(f"Unknown target_type: {self.target_type}, use 'default' or 'ex_prob' or 'nm_distribution'")
 
     def preprocess_graph(self, graph):
         num_nodes = graph["num_nodes"]
@@ -349,69 +370,88 @@ def collate_fn(batch, ds, n_pairs=None, min_max=None):
 # ==============================================================================
 #  4. Simplified Main Execution Block
 # ==============================================================================
-def main(args):
+# ───────────────── default 값 한곳에 모아두기 ─────────────
+DEFAULTS = dict(
+    mode          = "both",
+    train_file    = r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\graphormer_data\train_50_with_features.csv",
+    test_file     = r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\graphormer_data\test_10_with_features.csv",
+    target_type   = "nm_distribution",          # default | ex_prob | nm_distribution
+    batch_size    = 4,
+    ex_norm       = "none",             # ex_min_max | ex_std | none
+    prob_norm     = "none",             # prob_min_max | prob_std | none
+    nm_dist_mode  = "hist",            # hist | gauss
+    nm_gauss_sigma= 10,                 # 5 | 10 | 15
+    n_pairs       = 5                   # ex_prob 에서 상위 몇 쌍
+)
+
+# ───────────────── 헬퍼: 배치별 텐서 shape 출력 ────────────────────
+def show_batch_shapes(batch, title="Batch"):
+    print(f"  ▶ {title}")
+    for k, v in batch.items():
+        if torch.is_tensor(v):
+            print(f"    {k:16s} {tuple(v.shape)}")
+
+# ───────────────── 파서 빌더 (변경 없음) ───────────────────────────
+def build_parser():
+    p = argparse.ArgumentParser("SMILES data pipeline")
+    for k, v in DEFAULTS.items():
+        p.add_argument(f"--{k}", type=type(v), default=v)
+    p.add_argument("--target_type", choices=["default","ex_prob","nm_distribution"],
+                   default=DEFAULTS["target_type"])
+    p.add_argument("--ex_norm",   choices=["ex_min_max","ex_std","none"],
+                   default=DEFAULTS["ex_norm"])
+    p.add_argument("--prob_norm", choices=["prob_min_max","prob_std","none"],
+                   default=DEFAULTS["prob_norm"])
+    p.add_argument("--nm_dist_mode", choices=["hist","gauss"],
+                   default=DEFAULTS["nm_dist_mode"])
+    return p
+
+# ───────────────── 메인 파이프라인 ────────────────────────────────
+def run_pipeline(args):
     GLOBAL_FEATURE_NAMES = ['Solvent', 'Temperature', 'Pressure']
-    NOMINAL_FEATURE_VOCAB = {k: v for k, v in PREDEFINED_VOCAB.items() if k in GLOBAL_FEATURE_NAMES}
+    vocab = {k: v for k, v in PREDEFINED_VOCAB.items() if k in GLOBAL_FEATURE_NAMES}
 
-    global_feature_dim = sum(
-        len(NOMINAL_FEATURE_VOCAB[name]) if name in NOMINAL_FEATURE_VOCAB else 1
-        for name in GLOBAL_FEATURE_NAMES
-    )
-    
-    print("--- Configuration ---")
-    print(f"Predefined Global Feature Dimension: {global_feature_dim}")
-    print(f"Nominal Vocab Sizes: {{k: len(v) for k, v in NOMINAL_FEATURE_VOCAB.items()}}")
-    print("---------------------\n")
-
-    splits = []
-    if args.mode in ["train", "both"]:
-        splits.append(("train", args.train_file))
-    if args.mode in ["test", "both"]:
+    splits = [("train", args.train_file)] if args.mode in ("train","both") else []
+    if args.mode in ("test","both"):
         splits.append(("test", args.test_file))
 
-    for split_name, data_path in splits:
-        print(f"===== {split_name.upper()} ({data_path}) =====")
-        try:
-            ds = SMILESDataset(
-                csv_file=data_path,
-                nominal_feature_vocab=NOMINAL_FEATURE_VOCAB,
-                global_feature_names=GLOBAL_FEATURE_NAMES,
-                target_type=args.target_type,
-            )
-            dl = DataLoader(
-                ds,
-                batch_size=args.batch_size,
-                shuffle=(split_name == "train"),
-                collate_fn=lambda batch, _ds=ds: collate_fn(batch, _ds, n_pairs=5),
-            )
-            for i, batch in enumerate(dl):
-                print(f"  Batch {i+1}")
-                for k, v in batch.items():
-                    if isinstance(v, torch.Tensor):
-                        print(f"    {k:15s} {tuple(v.size())}")
-                if i >= 1:
-                    break
-        except Exception as e:
-            print(f"An error occurred: {e}")
-        print("-" * 20)
+    for split, csv in splits:
+        print(f"\n===== {split.upper()} | {csv} =====")
+        ds = SMILESDataset(
+            csv_file=csv,
+            nominal_feature_vocab=vocab,
+            global_feature_names=GLOBAL_FEATURE_NAMES,
+            target_type=args.target_type,
+            ex_normalize=args.ex_norm,
+            prob_normalize=args.prob_norm,
+            nm_dist_mode=args.nm_dist_mode,
+            nm_gauss_sigma=args.nm_gauss_sigma,
+        )
+        dl = torch.utils.data.DataLoader(
+            ds, batch_size=args.batch_size, shuffle=(split=="train"),
+            collate_fn=lambda b,_ds=ds: collate_fn(b,_ds,n_pairs=args.n_pairs)
+        )
 
+        for i, batch in enumerate(dl):
+            show_batch_shapes(batch, f"Batch {i+1}")      # ← 추가
+            break                                         # 첫 배치만 확인
+
+# ───────────────── 글로벌 feature info ────────────────────────────
+def show_feature_info(csv_path):
+    df = pd.read_csv(csv_path)
+    names = df.columns[-3:]
+    dim, vocab = get_global_feature_info(csv_path, names)
+    print("\n=== Global-feature info ===")
+    print("global_dim :", dim)
+    print("vocab      :", vocab)
+
+# ───────────────── entry point ────────────────────────────────────
+from types import SimpleNamespace
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SMILES Dataset pipeline test with predefined vocabulary.")
-    parser.add_argument("--mode", type=str, default="both", choices=["train", "test", "both"])
-    parser.add_argument("--train_file", type=str, default=r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\graphormer_data/graphormer_data/train_50_with_features.csv")
-    parser.add_argument("--test_file", type=str, default=r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\data\test_10_with_features.csv")
-    parser.add_argument("--target_type", type=str, default="default", choices=["default", "ex_prob", "nm_distribution"])
-    parser.add_argument("--batch_size", type=int, default=4)
-    
-    main(parser.parse_args())
+    if len(sys.argv) == 1:              # IDE 버튼 실행
+        args = SimpleNamespace(**DEFAULTS)
+    else:                               # 터미널 실행
+        args = build_parser().parse_args()
 
-
-    df = pd.read_csv(r"/Graphormer/graphormer_data/train_50_with_features.csv")
-    df = df.iloc[:,-3:]
-    print(df.columns)
-    global_dim, nominal_feature_vocab = get_global_feature_info(
-        r"/Graphormer/graphormer_data/graphormer_data/train_50_with_features.csv", df)
-    print(global_dim, nominal_feature_vocab)
-    global_dim, nominal_feature_vocab = get_global_feature_info(
-        r"/Graphormer/graphormer_data/graphormer_data/train_50_with_features.csv", PREDEFINED_VOCAB)
-    print(global_dim, nominal_feature_vocab)
+    run_pipeline(args)                  # 파이프라인 + shape 로그
+    show_feature_info(args.train_file)  # global feature info 함께 출력
