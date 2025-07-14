@@ -73,7 +73,7 @@ class GraphormerGraphEncoder(nn.Module):
     def forward(self, batched_data):
         """
         Args:
-            batched_data: Dictionary containing graph data
+            batched_data: Dictionary containing graph graphormer_data
                 - x: Node features
                 - in_degree: In-degree of nodes
                 - out_degree: Out-degree of nodes

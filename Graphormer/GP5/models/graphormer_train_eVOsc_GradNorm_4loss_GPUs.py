@@ -195,7 +195,7 @@ def train_model_ex_porb(
                 print("NaN detected in model outputs!")
                 print(f"Sample outputs: {outputs}")
                 print(targets)
-                raise ValueError("NaN values found in model outputs, check data and model configuration.")
+                raise ValueError("NaN values found in model outputs, check graphormer_data and model configuration.")
 
 
             # ex, prob
@@ -608,7 +608,7 @@ def main():
         args=(
             world_size,
             config,
-            "../../data/train_50.csv",
+            "../../graphormer_data/train_50.csv",
             "ex_prob",
             # ex1, ex2, prob1, prob2
             "SoftDTW", "MAE",  # 예시

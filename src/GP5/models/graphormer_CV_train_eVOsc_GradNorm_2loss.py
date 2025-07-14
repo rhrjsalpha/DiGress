@@ -46,8 +46,8 @@ def cross_validate_model(
     batch_size=64,
     n_pairs=1,
     learning_rate=0.001,
-    dataset_path="../../data/data_example.csv",
-    testset_path="../../data/data_example.csv",
+    dataset_path="../../graphormer_data/data_example.csv",
+    testset_path="../../graphormer_data/data_example.csv",
     n_splits=3, # Number of folds for Cross Validation
     patience = 20,
     DATASET = None,
@@ -753,11 +753,11 @@ if __name__ == "__main__":
         "qn_block_size": 8,  # Quantization block 크기
         "output_size": 100,  # 모델 출력 크기
     }
-    #     final_loss = cross_validate_model(config=config, target_type="ex_prob",dataset_path="../../data/train_50.csv", num_epochs=10, n_pairs=50, n_splits=5,loss_function_ex="MAE",loss_function_prob="MAE")
+    #     final_loss = cross_validate_model(config=config, target_type="ex_prob",dataset_path="../../graphormer_data/train_50.csv", num_epochs=10, n_pairs=50, n_splits=5,loss_function_ex="MAE",loss_function_prob="MAE")
     results_list = []
     loss_fn_list = ["SoftDTW"]
     for loss_fn in loss_fn_list:
-        cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../data/train_1000.csv",
+        cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../graphormer_data/train_1000.csv",
                                           num_epochs=5, n_pairs=50, n_splits=5, batch_size=32,loss_function_ex=loss_fn,
                                           loss_function_prob=loss_fn)
         cv_result["loss_function"] = loss_fn

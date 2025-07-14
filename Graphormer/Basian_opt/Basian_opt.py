@@ -165,15 +165,15 @@ def bayesian_optimization_param_grid(
     return results_df
 
 
-param_bounds, fixed_params = config_maker(dataset_path="../data/train_50.csv")
+param_bounds, fixed_params = config_maker(dataset_path="../graphormer_data/train_50.csv")
 print(param_bounds)
 
 results_df = bayesian_optimization_param_grid(
     config_combinations=[fixed_params],  # 고정된 값 포함
     param_bounds=param_bounds,          # 최적화할 하이퍼파라미터
     train_function=train_model,
-    dataset_path="../data/train_50.csv",
-    testset_path="../data/test_50.csv",
+    dataset_path="../graphormer_data/train_50.csv",
+    testset_path="../graphormer_data/test_50.csv",
     num_epochs=10,
     verbose=True,
     CV=True,

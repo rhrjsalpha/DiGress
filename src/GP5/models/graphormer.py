@@ -74,7 +74,7 @@ class GraphormerModel(nn.Module):
         Forward pass through the Graphormer model.
 
         Args:
-            batched_data: Dictionary containing input graph data.
+            batched_data: Dictionary containing input graph graphormer_data.
             targets: Optional target tensor to dynamically adjust output size.
             target_type: Type of target (e.g., 'default', 'ex_prob', 'nm_distribution').
 

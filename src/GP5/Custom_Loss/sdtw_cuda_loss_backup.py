@@ -109,7 +109,7 @@ def jacobean_product_squared_euclidean(X, Y, Bt):
 class _SoftDTWCUDA(Function):
     """
     CUDA implementation is inspired by the diagonal one proposed in https://ieeexplore.ieee.org/document/8400444:
-    "Developing a pattern discovery method in time series data and its GPU acceleration"
+    "Developing a pattern discovery method in time series graphormer_data and its GPU acceleration"
     """
 
     @staticmethod

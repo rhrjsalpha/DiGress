@@ -29,7 +29,7 @@ def train_model(
     batch_size=50,
     n_pairs=1,
     learning_rate=0.001,
-    dataset_path="../../data/data_example.csv",
+    dataset_path="../../graphormer_data/data_example.csv",
     patience = 20,
     DATASET = None
 ):
@@ -115,7 +115,7 @@ def train_model(
             if torch.isnan(outputs).any() or torch.isinf(outputs).any():
                 print("NaN detected in model outputs!")
                 print(f"Sample outputs: {outputs}")
-                raise ValueError("NaN values found in model outputs, check data and model configuration.")
+                raise ValueError("NaN values found in model outputs, check graphormer_data and model configuration.")
 
             # Compute loss
             if target_type == "default":
@@ -294,8 +294,8 @@ if __name__ == "__main__":
     target_type = "default" # "ex_prob" "default" "nm_distribution"
     final_loss = train_model(config=config,
                              target_type=target_type,
-                             dataset_path="../../data/train_50.csv",
-                             loss_function="SoftDTW", #MSE, MAE, SoftDTW, Huber, SID
+                             dataset_path="../../graphormer_data/train_50.csv",
+                             loss_function="SoftDTW",  #MSE, MAE, SoftDTW, Huber, SID
                              batch_size=10,
                              num_epochs=1500,
                              n_pairs=3,

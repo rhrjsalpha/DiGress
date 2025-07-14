@@ -10,7 +10,7 @@ dataset = MoleculeDataset(smiles_list)
 print(dataset)
 
 # CSV 파일 경로
-file_path = r'..\..\data/test_1000.csv'
+file_path = r'../../graphormer_data/test_1000.csv'
 
 # 데이터 로드 및 필요한 컬럼 추출
 data = pd.read_csv(file_path)

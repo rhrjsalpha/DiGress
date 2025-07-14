@@ -37,7 +37,7 @@ if __name__ == "__main__":
     args_ns = SimpleNamespace(**args_dict)
 
     # ✅ 전체 dataset 로딩 및 fold subset 생성
-    dataset = SMILESDataset(csv_file="../../data/train_50.csv", attn_bias_w=1.0, target_type=args_ns.target_type)
+    dataset = SMILESDataset(csv_file="../../graphormer_data/train_50.csv", attn_bias_w=1.0, target_type=args_ns.target_type)
     train_subset, val_subset = get_fold_subset(dataset, fold_idx=int(args.args[-6]))  # fold3.json → 3
 
     args_ns.TRAIN_DATASET = train_subset

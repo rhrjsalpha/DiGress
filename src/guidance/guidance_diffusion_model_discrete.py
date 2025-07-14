@@ -169,7 +169,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                    'final validity': final_validity})
 
     def apply_noise(self, X, E, y, node_mask):
-        """ Sample noise and apply it to the data. """
+        """ Sample noise and apply it to the graphormer_data. """
         # Sample a timestep t.
         # When evaluating, the loss for t=0 is computed separately
         lowest_t = 0 if self.training else 1

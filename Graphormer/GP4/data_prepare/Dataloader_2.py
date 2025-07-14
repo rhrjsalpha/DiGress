@@ -93,7 +93,7 @@ class SMILESDataset(Dataset):
             graph: A dictionary returned by smiles2graph.
 
         Returns:
-            A dictionary containing preprocessed graph data.
+            A dictionary containing preprocessed graph graphormer_data.
         """
         num_nodes = graph["num_nodes"]
         edge_index = torch.tensor(graph["edge_index"], dtype=torch.long)
@@ -219,13 +219,13 @@ class SMILESDataset(Dataset):
 
 def collate_fn(batch):
     """
-    Collate a batch of data and pad the graphs to the maximum size in the batch.
+    Collate a batch of graphormer_data and pad the graphs to the maximum size in the batch.
 
     Args:
         batch: List of (graph, target) tuples.
 
     Returns:
-        A dictionary containing batched and padded data.
+        A dictionary containing batched and padded graphormer_data.
     """
     max_nodes = max(graph["x"].size(0) for graph, _ in batch)
 
@@ -319,9 +319,9 @@ def pad_tensor(tensor, max_len, pad_dim):
 
 # Example Usage
 if __name__ == "__main__":
-    dataset_default = SMILESDataset(csv_file="../../data/test_1000.csv", target_type="default", attn_bias_w=1.0)  # 100개 target
-    dataset_ex_prob = SMILESDataset(csv_file="../../data/test_1000.csv", target_type="ex_prob", attn_bias_w=1.0)  # [ex, prob] 50개
-    dataset_nm_dist = SMILESDataset(csv_file="../../data/test_1000.csv", target_type="nm_distribution", attn_bias_w=1.0)  # 801개 target
+    dataset_default = SMILESDataset(csv_file="../../graphormer_data/test_1000.csv", target_type="default", attn_bias_w=1.0)  # 100개 target
+    dataset_ex_prob = SMILESDataset(csv_file="../../graphormer_data/test_1000.csv", target_type="ex_prob", attn_bias_w=1.0)  # [ex, prob] 50개
+    dataset_nm_dist = SMILESDataset(csv_file="../../graphormer_data/test_1000.csv", target_type="nm_distribution", attn_bias_w=1.0)  # 801개 target
 
     dataloader = DataLoader(dataset_default, batch_size=32, collate_fn=collate_fn)
 

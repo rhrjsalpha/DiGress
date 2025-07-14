@@ -33,7 +33,7 @@ def train_model_and_plot(
     batch_size=50,
     n_pairs=1,
     learning_rate=0.001,
-    dataset_path="../../data/data_example.csv",
+    dataset_path="../../graphormer_data/data_example.csv",
 ):
     """
     Train the Graphormer model with specified configurations and return the final loss and evaluation metrics.
@@ -422,12 +422,12 @@ config = {
 # Example usage
 if __name__ == "__main__":
     final_loss = train_model_and_plot(config=config,
-                             target_type="ex_prob",
-                             dataset_path="../../data/train_50.csv",
-                             loss_function_ex="Huber",
-                             loss_function_prob="SID", #MSE, MAE, SoftDTW, Huber, SID
-                             batch_size=5,
-                             num_epochs=100,
-                             n_pairs=5)
+                                      target_type="ex_prob",
+                                      dataset_path="../../graphormer_data/train_50.csv",
+                                      loss_function_ex="Huber",
+                                      loss_function_prob="SID",  #MSE, MAE, SoftDTW, Huber, SID
+                                      batch_size=5,
+                                      num_epochs=100,
+                                      n_pairs=5)
     print(final_loss)
     #print(f"Final Average Loss: {final_loss['final_loss']:.4f}")

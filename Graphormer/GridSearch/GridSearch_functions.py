@@ -221,7 +221,7 @@ def grid_search_param_grid(final_param_gird, train_function, dataset_path, tests
         else:
             return None
 
-config_combinations = config_maker("../data/train_1000.csv", combination_dict=None)
+config_combinations = config_maker("../graphormer_data/train_1000.csv", combination_dict=None)
 
 param_grid = {
     "target_type": ["ex_prob"],  # 대상 유형
@@ -236,7 +236,7 @@ param_grid = {
 
 combinations = grid_combinations(config_combinations=config_combinations, param_grid=param_grid)
 #print(combinations)
-results_df = grid_search_param_grid(final_param_gird=combinations, train_function = train_model, dataset_path="../data/train_1000.csv", testset_path="../data/test_1000.csv",num_epochs=200, verbose=True, CV=True)
+results_df = grid_search_param_grid(final_param_gird=combinations, train_function = train_model, dataset_path="../graphormer_data/train_1000.csv", testset_path="../graphormer_data/test_1000.csv", num_epochs=200, verbose=True, CV=True)
 results_df.to_csv("../GridSearch/GredSearch_n_pair_5.csv", index=False)
 
 

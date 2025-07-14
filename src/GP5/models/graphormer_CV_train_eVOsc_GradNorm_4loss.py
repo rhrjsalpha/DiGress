@@ -41,8 +41,8 @@ def cross_validate_model(
     batch_size=64,
     n_pairs=1,
     learning_rate=0.001,
-    dataset_path="../../data/data_example.csv",
-    testset_path="../../data/data_example.csv",
+    dataset_path="../../graphormer_data/data_example.csv",
+    testset_path="../../graphormer_data/data_example.csv",
     n_splits=3, # Number of folds for Cross Validation
     patience = 20,
     DATASET = None,
@@ -735,7 +735,7 @@ if __name__ == "__main__":
         "output_size": 100,  # 모델 출력 크기
     }
     print("CV config", config)
-    final_loss = cross_validate_model(config=config, target_type="ex_prob",dataset_path="../../data/train_50.csv", num_epochs=10, n_pairs=50, n_splits=5,
+    final_loss = cross_validate_model(config=config, target_type="ex_prob",dataset_path="../../graphormer_data/train_50.csv", num_epochs=10, n_pairs=50, n_splits=5,
                                       loss_function_ex_1="SoftDTW",loss_function_ex_2="SoftDTW",loss_function_prob_1="SoftDTW",loss_function_prob_2="MAE", patience=5)
     print(final_loss)
     #print(f"Final Average Loss: {final_loss:.4f}")

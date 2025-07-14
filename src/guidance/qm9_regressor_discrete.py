@@ -204,7 +204,7 @@ class Qm9RegressorDiscrete(pl.LightningModule):
         reset_metrics(self.test_loss_each)
 
     def apply_noise(self, X, E, y, node_mask):
-        """ Sample noise and apply it to the data. """
+        """ Sample noise and apply it to the graphormer_data. """
 
         # Sample a timestep t.
         # When evaluating, the loss for t=0 is computed separately
@@ -284,7 +284,7 @@ class Qm9RegressorDiscrete(pl.LightningModule):
                pred_epsX: bs, n, dx
                pred_epsy: bs, n, n, dy
                pred_eps_z: bs, dz
-           data: dict
+           graphormer_data: dict
            noisy_data: dict
            Output: mse (size 1)
        """

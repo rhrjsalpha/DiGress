@@ -323,7 +323,7 @@ param_bounds = {
 
 
 # ✅ 실행 코드
-fixed_params = create_fixed_params("../data/train_100.csv", {}, dynamic=True)
+fixed_params = create_fixed_params("../graphormer_data/train_100.csv", {}, dynamic=True)
 fixed_params["target_type"] = ["ex_prob"] # "ex_prob"
 fixed_params["loss_function"] = ["MSE"] # "SoftDTW", "MSE", "MAE", "Huber", "SID"
 fixed_params["loss_function_ex"] = ["SID","SoftDTW"]
@@ -335,15 +335,15 @@ fixed_params["batch_size"] = [64]
 fixed_params["n_pairs"] = [50]
 fixed_params["edge_type"] = ["multi_hop"]
 
-dataset = SMILESDataset(csv_file="../data/train_50.csv", attn_bias_w=1.0, target_type="ex_prob")
-test_dataset = SMILESDataset(csv_file="../data/train_50.csv", attn_bias_w=1.0, target_type="ex_prob")
+dataset = SMILESDataset(csv_file="../graphormer_data/train_50.csv", attn_bias_w=1.0, target_type="ex_prob")
+test_dataset = SMILESDataset(csv_file="../graphormer_data/train_50.csv", attn_bias_w=1.0, target_type="ex_prob")
 
 
 results = bayesian_optimization_botorch(
     param_bounds=param_bounds,
     fixed_params=fixed_params,
-    dataset_path="../data/train_50.csv",
-    testset_path="../data/train_50.csv",
+    dataset_path="../graphormer_data/train_50.csv",
+    testset_path="../graphormer_data/train_50.csv",
     DATASET=dataset,
     TEST_DATASET=test_dataset,
     init_points=3,

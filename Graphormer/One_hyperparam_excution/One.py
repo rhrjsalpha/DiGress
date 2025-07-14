@@ -9,7 +9,7 @@ from Graphormer.GP.models.graphormer_torch import GraphormerModel, get_default_a
 import pandas as pd
 
 # 1. 데이터셋 준비
-file_path = r'..\data/test_1000.csv'
+file_path = r'../graphormer_data/test_1000.csv'
 
 # 데이터 로드 및 필요한 컬럼 추출
 data = pd.read_csv(file_path)

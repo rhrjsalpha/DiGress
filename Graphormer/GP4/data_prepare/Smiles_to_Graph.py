@@ -5,7 +5,7 @@ from ogb.utils.mol import smiles2graph
 class GraphDataset:
     def __init__(self, smiles_list, max_nodes=128, multi_hop_max_dist=5):
         """
-        A standalone implementation for processing SMILES strings into graph data.
+        A standalone implementation for processing SMILES strings into graph graphormer_data.
 
         Args:
             smiles_list: List of SMILES strings.
@@ -47,7 +47,7 @@ class GraphDataset:
             graph: A graph object returned by smiles2graph.
 
         Returns:
-            A dictionary containing preprocessed graph data.
+            A dictionary containing preprocessed graph graphormer_data.
         """
         num_nodes = graph['num_nodes']
         edge_index = graph['edge_index']

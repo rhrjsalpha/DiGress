@@ -27,8 +27,8 @@ def cross_validate_model(
     batch_size=50,
     n_pairs=1,
     learning_rate=0.001,
-    dataset_path="../../data/data_example.csv",
-    testset_path="../../data/data_example.csv",
+    dataset_path="../../graphormer_data/data_example.csv",
+    testset_path="../../graphormer_data/data_example.csv",
     n_splits=3,  # Number of folds for Cross Validation
     patience = 20,
     DATASET = None,
@@ -138,7 +138,7 @@ def cross_validate_model(
                 outputs = model(batched_data, targets=targets, target_type=target_type)
                 #print(f"Batch keys: {batch.keys()}")
                 #print(f"Batch targets shape: {batch['targets'].shape}")
-                #print(f"Batched data keys: {batched_data.keys()}")
+                #print(f"Batched graphormer_data keys: {batched_data.keys()}")
                 #print(f"Outputs shape: {outputs.shape}")
 
                 outputs = outputs + 1e-6  # Small value to prevent log(0)
@@ -432,8 +432,8 @@ if __name__ == "__main__":
     }
 
     final_loss = cross_validate_model(config=config, target_type="default",
-                                      dataset_path="../../data/train_100.csv", testset_path = "../../data/train_50.csv",
-                                      batch_size=10, num_epochs=1000, n_pairs=5,loss_function="SoftDTW", #MSE, MAE, SoftDTW, Huber, SID
+                                      dataset_path="../../graphormer_data/train_100.csv", testset_path ="../../graphormer_data/train_50.csv",
+                                      batch_size=10, num_epochs=1000, n_pairs=5, loss_function="SoftDTW",  #MSE, MAE, SoftDTW, Huber, SID
                                       patience = 20)
     print(final_loss)
     #print(f"Final Average Loss: {final_loss:.4f}")

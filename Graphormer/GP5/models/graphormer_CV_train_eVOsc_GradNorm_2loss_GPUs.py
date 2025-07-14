@@ -254,9 +254,9 @@ def cross_validate_model(
 ):
 
     if train_dataset is None:
-        train_dataset = SMILESDataset(csv_file="../../data/train_50.csv", attn_bias_w=1.0, target_type=target_type)
+        train_dataset = SMILESDataset(csv_file="../../graphormer_data/train_50.csv", attn_bias_w=1.0, target_type=target_type)
     if test_dataset is None:
-        test_dataset = SMILESDataset(csv_file="../../data/test_100.csv", attn_bias_w=1.0, target_type=target_type)
+        test_dataset = SMILESDataset(csv_file="../../graphormer_data/test_100.csv", attn_bias_w=1.0, target_type=target_type)
 
     if cv_result_root is None:
         cv_result_root = "cv_results.csv"
@@ -313,7 +313,7 @@ def cross_validate_model(
     return final_flattened_dict
 
 if __name__ == "__main__":
-    dataset_path = "../../data/train_50.csv"
+    dataset_path = "../../graphormer_data/train_50.csv"
     target_type = "ex_prob"
     # 자동 분할 (csv 한 개에서 5fold Subset 생성)
     config = {
@@ -340,7 +340,7 @@ if __name__ == "__main__":
     }
 
     train_dataset = SMILESDataset(csv_file=dataset_path, attn_bias_w=1.0, target_type=target_type)
-    test_dataset = SMILESDataset(csv_file="../../data/test_100.csv", attn_bias_w=1.0, target_type=target_type)
+    test_dataset = SMILESDataset(csv_file="../../graphormer_data/test_100.csv", attn_bias_w=1.0, target_type=target_type)
     df = cross_validate_model(
         config,
         target_type="ex_prob",

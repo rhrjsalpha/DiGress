@@ -152,7 +152,7 @@ def train_model_ex_porb(rank, args):
             if torch.isnan(outputs).any() or torch.isinf(outputs).any():
                 print("NaN detected in model outputs!")
                 print(f"Sample outputs: {outputs}")
-                raise ValueError("NaN values found in model outputs, check data and model configuration.")
+                raise ValueError("NaN values found in model outputs, check graphormer_data and model configuration.")
 
                 # Compute loss
             if args.target_type == "ex_prob":
@@ -684,8 +684,8 @@ def main():
     mp.spawn(train_model_ex_porb,
              args=(world_size,
                    config,
-                   "../../data/train_50.csv",  # train dataset
-                   "../../data/train_50.csv",  # validation dataset (임시로 동일하게 사용, 나중에 분리 가능)
+                   "../../graphormer_data/train_50.csv",  # train dataset
+                   "../../graphormer_data/train_50.csv",  # validation dataset (임시로 동일하게 사용, 나중에 분리 가능)
                    "ex_prob",
                    "MAE",
                    "MAE",

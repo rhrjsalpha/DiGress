@@ -398,7 +398,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SMILES Dataset pipeline test with predefined vocabulary.")
     parser.add_argument("--mode", type=str, default="both", choices=["train", "test", "both"])
-    parser.add_argument("--train_file", type=str, default=r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\data/data/train_50_with_features.csv")
+    parser.add_argument("--train_file", type=str, default=r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\graphormer_data/graphormer_data/train_50_with_features.csv")
     parser.add_argument("--test_file", type=str, default=r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\data\test_10_with_features.csv")
     parser.add_argument("--target_type", type=str, default="default", choices=["default", "ex_prob", "nm_distribution"])
     parser.add_argument("--batch_size", type=int, default=4)
@@ -406,11 +406,12 @@ if __name__ == "__main__":
     main(parser.parse_args())
 
 
-    df = pd.read_csv(r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\data/train_50_with_features.csv")
+    df = pd.read_csv(r"/Graphormer/graphormer_data/train_50_with_features.csv")
     df = df.iloc[:,-3:]
     print(df.columns)
-    global_dim, nominal_feature_vocab = get_global_feature_info(r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\data/data/train_50_with_features.csv", df)
+    global_dim, nominal_feature_vocab = get_global_feature_info(
+        r"/Graphormer/graphormer_data/graphormer_data/train_50_with_features.csv", df)
     print(global_dim, nominal_feature_vocab)
     global_dim, nominal_feature_vocab = get_global_feature_info(
-        r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\data/data/train_50_with_features.csv", PREDEFINED_VOCAB)
+        r"/Graphormer/graphormer_data/graphormer_data/train_50_with_features.csv", PREDEFINED_VOCAB)
     print(global_dim, nominal_feature_vocab)

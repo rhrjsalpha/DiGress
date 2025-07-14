@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # ✅ 파일 경로 설정
-file_path = "../data/train_100.csv"  # 파일 경로 수정 필요
+file_path = "../graphormer_data/train_100.csv"  # 파일 경로 수정 필요
 
 # ✅ 데이터 로드
 try:

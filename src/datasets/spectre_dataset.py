@@ -10,7 +10,7 @@ from src.datasets.abstract_dataset import AbstractDataModule, AbstractDatasetInf
 class SpectreGraphDataset(Dataset):
     def __init__(self, data_file):
         """ This class can be used to load the comm20, sbm and planar datasets. """
-        base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, os.pardir, 'data')
+        base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, os.pardir, 'graphormer_data')
         filename = os.path.join(base_path, data_file)
         self.adjs, self.eigvals, self.eigvecs, self.n_nodes, self.max_eigval, self.min_eigval, self.same_sample, self.n_max = torch.load(
             filename)

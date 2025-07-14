@@ -13,7 +13,7 @@ def sid_loss(
     threshold: float = None,
 ) -> torch.tensor:
     """
-    Loss function for use with spectra data type.
+    Loss function for use with spectra graphormer_data type.
 
     :param model_spectra: The predicted spectra output from a model with shape (batch_size,spectrum_length).
     :param target_spectra: The target spectra with shape (batch_size,spectrum_length). Values must be normalized so that each spectrum sums to 1.

@@ -33,7 +33,7 @@ config = {
 }
 
 # Initialize dataset and DataLoader
-dataset = SMILESDataset(csv_file="../../data/data_example.csv", attn_bias_w=1.0)  # Include edge weight
+dataset = SMILESDataset(csv_file="../../graphormer_data/data_example.csv", attn_bias_w=1.0)  # Include edge weight
 dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
 
 # Initialize the model, loss function, and optimizer
@@ -43,7 +43,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 def move_to_device(batch, device):
     """
-    Move batch data to the specified device.
+    Move batch graphormer_data to the specified device.
     """
     return {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
@@ -56,7 +56,7 @@ for epoch in range(num_epochs):
     model.train()
     total_loss = 0.0
     for batch in dataloader:
-        # Move batch data to the device
+        # Move batch graphormer_data to the device
         batch = move_to_device(batch, device)
 
         # Extract inputs and targets from the batch

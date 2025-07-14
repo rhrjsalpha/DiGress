@@ -376,7 +376,7 @@ if __name__ == "__main__":
     }
 
     # ✅ 실행 코드
-    fixed_params = create_fixed_params("../data/train_50.csv", {}, dynamic=False)
+    fixed_params = create_fixed_params("../graphormer_data/train_50.csv", {}, dynamic=False)
     fixed_params["target_type"] = ["ex_prob"]  # "ex_prob"
     fixed_params["loss_function"] = ["MSE"]  # "SoftDTW", "MSE", "MAE", "Huber", "SID"
     fixed_params["loss_function_ex"] = ["SID"]
@@ -388,8 +388,8 @@ if __name__ == "__main__":
     fixed_params["n_pairs"] = [50]
     fixed_params["edge_type"] = ["multi_hop"]
 
-    dataset = SMILESDataset(csv_file="../data/train_50.csv", attn_bias_w=1.0, target_type="ex_prob")
-    test_dataset = SMILESDataset(csv_file="../data/test_100.csv", attn_bias_w=1.0, target_type="ex_prob")
+    dataset = SMILESDataset(csv_file="../graphormer_data/train_50.csv", attn_bias_w=1.0, target_type="ex_prob")
+    test_dataset = SMILESDataset(csv_file="../graphormer_data/test_100.csv", attn_bias_w=1.0, target_type="ex_prob")
     all_combinations = expand_grid(fixed_params)
     combination_counter = 0
     for fixed_combination in all_combinations:
@@ -399,8 +399,8 @@ if __name__ == "__main__":
         results = bayesian_optimization_botorch(
             param_bounds=param_bounds,
             fixed_params=fixed_combination,
-            dataset_path="../data/train_50.csv",
-            testset_path="../data/test_100.csv",
+            dataset_path="../graphormer_data/train_50.csv",
+            testset_path="../graphormer_data/test_100.csv",
             DATASET=dataset,
             TEST_DATASET=test_dataset,
             init_points=2,

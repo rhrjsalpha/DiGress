@@ -27,8 +27,8 @@ def cross_validate_model(
     batch_size=50,
     n_pairs=1,
     learning_rate=0.001,
-    dataset_path="../../data/data_example.csv",
-    testset_path="../../data/data_example.csv",
+    dataset_path="../../graphormer_data/data_example.csv",
+    testset_path="../../graphormer_data/data_example.csv",
     n_splits=3,  # Number of folds for Cross Validation
     patience = 20,
     DATASET = None,
@@ -462,10 +462,10 @@ if __name__ == "__main__":
     }
 
     final_loss = cross_validate_model(config=config, target_type="default",
-                                      dataset_path="../../data/train_100.csv", testset_path = "../../data/train_50.csv",
+                                      dataset_path="../../graphormer_data/train_100.csv", testset_path ="../../graphormer_data/train_50.csv",
                                       batch_size=10, num_epochs=10, n_pairs=50,
                                       loss_function_1="SID",
-                                      loss_function_2="SoftDTW",#MSE, MAE, SoftDTW, Huber, SID
+                                      loss_function_2="SoftDTW",  #MSE, MAE, SoftDTW, Huber, SID
                                       patience = 20,
                                       SoftDTW_pulling="Max")
     print(final_loss)

@@ -96,7 +96,7 @@ class LiftedDenoisingDiffusion(pl.LightningModule):
         extra_data = self.compute_extra_data(noisy_data)
         pred = self.forward(noisy_data, extra_data, node_mask)
 
-        # TODO: change noisy data
+        # TODO: change noisy graphormer_data
         mse = self.train_loss(masked_pred_epsX=pred.X,
                               masked_pred_epsE=pred.E,
                               pred_y=pred.y,
@@ -149,7 +149,7 @@ class LiftedDenoisingDiffusion(pl.LightningModule):
         extra_data = self.compute_extra_data(noisy_data)
         pred = self.forward(noisy_data, extra_data, node_mask)
 
-        # TODO: check if compute val loss should be called on the normalized data or not
+        # TODO: check if compute val loss should be called on the normalized graphormer_data or not
         nll = self.compute_val_loss(pred, noisy_data, normalized_data.X, normalized_data.E, normalized_data.y,
                                     node_mask, test=False)
         return {'loss': nll}
@@ -390,7 +390,7 @@ class LiftedDenoisingDiffusion(pl.LightningModule):
         return log_pE + log_pX + log_py
 
     def apply_noise(self, X, E, y, node_mask):
-        """ Sample noise and apply it to the data. """
+        """ Sample noise and apply it to the graphormer_data. """
         # When evaluating, the loss for t=0 is computed separately
         lowest_t = 0 if self.training else 1
 
@@ -525,7 +525,7 @@ class LiftedDenoisingDiffusion(pl.LightningModule):
         return nll
 
     def forward(self, noisy_data, extra_data, node_mask):
-        """ Concatenates extra data to the noisy data, then calls the network. """
+        """ Concatenates extra graphormer_data to the noisy graphormer_data, then calls the network. """
         X = torch.cat((noisy_data['X_t'], extra_data.X), dim=2)
         E = torch.cat((noisy_data['E_t'], extra_data.E), dim=3)
         y = torch.hstack((noisy_data['y_t'], extra_data.y))
@@ -614,7 +614,7 @@ class LiftedDenoisingDiffusion(pl.LightningModule):
         print(f"Average X coordinate at each step {[int(c) for i, c in enumerate(average_X_coord) if i % 10 == 0]}")
         print(f"Average E coordinate at each step {[int(c) for i, c in enumerate(average_E_coord) if i % 10 == 0]}")
 
-        # Finally sample the discrete data given the last latent code z0
+        # Finally sample the discrete graphormer_data given the last latent code z0
         final_graph = self.sample_discrete_graph_given_z0(X, E, y, node_mask)
         X, E, y = final_graph.X, final_graph.E, final_graph.y
         assert (E == torch.transpose(E, 1, 2)).all()

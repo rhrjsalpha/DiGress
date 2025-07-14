@@ -273,8 +273,8 @@ param_bounds = {
 
 # Run Grid Search + Bayesian Optimization
 
-dataset = SMILESDataset(csv_file="../data/train_50.csv", attn_bias_w=1.0, target_type=fixed_param_grid["target_type"][0])
-test_dataset = SMILESDataset(csv_file="../data/train_50.csv", attn_bias_w=1.0, target_type=fixed_param_grid["target_type"][0])
+dataset = SMILESDataset(csv_file="../graphormer_data/train_50.csv", attn_bias_w=1.0, target_type=fixed_param_grid["target_type"][0])
+test_dataset = SMILESDataset(csv_file="../graphormer_data/train_50.csv", attn_bias_w=1.0, target_type=fixed_param_grid["target_type"][0])
 
 all_results = []
 total_grid_count = len(grid_dicts)
@@ -284,15 +284,15 @@ for combination in grid_dicts:
     print(f"Running Bayesian Optimization for fixed parameters: {combination}")
 
     # Generate dataset-dependent fixed params
-    fixed_params = create_fixed_params("../data/train_100.csv", combination, dynamic=False)
+    fixed_params = create_fixed_params("../graphormer_data/train_100.csv", combination, dynamic=False)
     print("fixed_params", fixed_params)
 
     # Run Bayesian Optimization
     results_df = bayesian_optimization_param_grid(
         param_bounds=param_bounds,
         train_function=train_model_ex_porb,
-        dataset_path="../data/train_100.csv",
-        testset_path="../data/train_100.csv",
+        dataset_path="../graphormer_data/train_100.csv",
+        testset_path="../graphormer_data/train_100.csv",
         fixed_params=fixed_params,
         verbose=True,
         CV=True,

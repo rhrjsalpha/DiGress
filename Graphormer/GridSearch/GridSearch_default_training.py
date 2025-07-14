@@ -199,7 +199,7 @@ def grid_search_param_grid(final_param_grid, train_function, dataset_path, tests
         else:
             return None
 
-config_combinations = config_maker("../data/train_50.csv", combination_dict=None)
+config_combinations = config_maker("../graphormer_data/train_50.csv", combination_dict=None)
 
 param_grid = {
     "target_type": ["default"],  # 대상 유형
@@ -215,8 +215,8 @@ combinations = grid_combinations(config_combinations=config_combinations, param_
 results_df = grid_search_param_grid(
     final_param_grid=combinations,
     train_function=train_model,
-    dataset_path="../data/train_50.csv",
-    testset_path="../data/train_50.csv",
+    dataset_path="../graphormer_data/train_50.csv",
+    testset_path="../graphormer_data/train_50.csv",
     num_epochs=10,
     verbose=True,
     CV=True

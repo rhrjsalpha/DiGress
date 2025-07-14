@@ -126,7 +126,7 @@ class SMILESDataset(Dataset):
             graph: A dictionary returned by smiles2graph.
 
         Returns:
-            A dictionary containing preprocessed graph data.
+            A dictionary containing preprocessed graph graphormer_data.
         """
         num_nodes = graph["num_nodes"]
         edge_index = torch.tensor(graph["edge_index"], dtype=torch.long)
@@ -253,7 +253,7 @@ class SMILESDataset(Dataset):
 
 def collate_fn(batch, dataset, n_pairs=None, min_max=None): # DataLoader에서 collatefn 에 의해 SMILESDataset의 __getitem__에 의해 불려온 것들의 처리가 일어남, 이때 idx는 기존 전체의 idx 기
     """
-    Collate a batch of data and process targets dynamically based on target type.
+    Collate a batch of graphormer_data and process targets dynamically based on target type.
 
     Args:
         batch: List of (graph, target, index) tuples.
@@ -261,7 +261,7 @@ def collate_fn(batch, dataset, n_pairs=None, min_max=None): # DataLoader에서 c
         n_pairs: Number of [ex, prob] pairs to include (only for `ex_prob` target type).
 
     Returns:
-        A dictionary containing batched and padded data.
+        A dictionary containing batched and padded graphormer_data.
     """
     max_nodes = max(graph["x"].size(0) for graph, _, _ in batch)
     batch_indices = [index for _, _, index in batch]  # 인덱스 추출
@@ -472,7 +472,7 @@ def nm_to_ev(wavelength_nm):
 if __name__ == "__main__":
     a = 2
     if a == 0:
-        dataset_default = SMILESDataset(csv_file="../../data/train_50.csv", target_type="default", attn_bias_w=1.0)  # 100개 target
+        dataset_default = SMILESDataset(csv_file="../../graphormer_data/train_50.csv", target_type="default", attn_bias_w=1.0)  # 100개 target
         dataloader = DataLoader(dataset_default, batch_size=5, collate_fn=lambda batch: collate_fn(batch, dataset_default, n_pairs=5))
 
         count=0
@@ -495,7 +495,7 @@ if __name__ == "__main__":
         #    break
     elif a == 1:
         count = 0
-        dataset_ex_prob = SMILESDataset(csv_file="../../data/train_50.csv", target_type="ex_prob",
+        dataset_ex_prob = SMILESDataset(csv_file="../../graphormer_data/train_50.csv", target_type="ex_prob",
                                         attn_bias_w=1.0)  # [ex, prob] 50개
         dataloader = DataLoader(dataset_ex_prob, batch_size=8, collate_fn=lambda batch: collate_fn(batch, dataset_ex_prob, n_pairs=5))
         for batch in dataloader:
@@ -517,7 +517,7 @@ if __name__ == "__main__":
             #    break
 
     elif a == 2:
-        dataset_nm_dist = SMILESDataset(csv_file="../../data/train_50.csv", target_type="nm_distribution",
+        dataset_nm_dist = SMILESDataset(csv_file="../../graphormer_data/train_50.csv", target_type="nm_distribution",
                                         attn_bias_w=1.0)  # 801개 target
         dataloader = DataLoader(dataset_nm_dist, batch_size=32, collate_fn=lambda batch: collate_fn(batch, dataset_nm_dist, n_pairs=5))
         count = 0

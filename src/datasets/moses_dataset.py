@@ -238,7 +238,7 @@ class MOSESinfos(AbstractDatasetInfos):
             print("Distribution of the valencies", valencies)
             np.savetxt(meta_files["valency_distribution"], valencies.numpy())
             self.valency_distribution = valencies
-        # after we can be sure we have the data, complete infos
+        # after we can be sure we have the graphormer_data, complete infos
         self.complete_infos(n_nodes=self.n_nodes, node_types=self.node_types)
 
 
@@ -274,5 +274,5 @@ def get_train_smiles(cfg, datamodule, dataset_infos, evaluate_dataset=False):
 
 
 if __name__ == "__main__":
-    ds = [MOSESDataset(s, os.path.join(os.path.abspath(__file__), "../../../data/moses"),
+    ds = [MOSESDataset(s, os.path.join(os.path.abspath(__file__), "../../../graphormer_data/moses"),
                        preprocess=True) for s in ["train", "val", "test"]]

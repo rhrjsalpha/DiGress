@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from Graphormer.GP5.data_prepare.Dataloader_2 import SMILESDataset, collate_fn
-from Graphormer.GP5.models.graphormer import GraphormerModel
+from Graphormer.GP5.data_prepare.Dataloader_QMData import SMILESDataset, collate_fn, PREDEFINED_VOCAB
+from Graphormer.GP5.models_new.graphormer_3 import GraphormerModel
 import os
 from Graphormer.GP5.Custom_Loss.custom_loss import fastdtw_loss
 from Graphormer.GP5.Custom_Loss.soft_dtw_cuda import SoftDTW
@@ -14,9 +14,8 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from Graphormer.GP5.Custom_Loss.fast_dtw import fastdtw
 import time
 from sklearn.model_selection import KFold
-from Graphormer.GP5.models.graphormer_train_eVOsc_GradNorm_2loss_notearlystop import train_model_ex_porb
+from Graphormer.GP5.models_new.graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3 import train_model_ex_porb
 from chemprop.train.loss_functions import sid_loss
-#from tslearn.metrics import SoftDTWLossPyTorch
 from Graphormer.GP5.Custom_Loss.GradNorm import GradNorm
 
 import math
@@ -24,6 +23,15 @@ import pandas as pd
 import time, psutil
 
 process = psutil.Process()
+
+def calculate_rmse(y_true, y_pred):
+    try:
+        # Try with squared=False (for newer scikit-learn versions)
+        rmse = mean_squared_error(y_true, y_pred, squared=False)
+    except TypeError:
+        # Fallback for older scikit-learn versions
+        rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    return rmse
 
 def CV_loss_fn_name_gen(loss_fn, ex_prob): ### CV_r2_ex
     if loss_fn == "SID":
@@ -55,7 +63,8 @@ def cross_validate_model(
     patience = 20,
     DATASET = None,
     TEST_DATASET = None,
-    alpha = 0.12
+    alpha = 0.12,
+    global_feature_names=None # Added parameter
     ):
     """
     Perform cross-validation and final training on the entire dataset.
@@ -68,9 +77,12 @@ def cross_validate_model(
         dict: Results containing CV metrics and full dataset metrics.
     """
     if DATASET is None:
-        dataset = SMILESDataset(csv_file=dataset_path, attn_bias_w=1.0, target_type=target_type)
+        dataset = SMILESDataset(csv_file=dataset_path, attn_bias_w=1.0, target_type=target_type, nominal_feature_vocab=nominal_dims, global_feature_names=global_feature_names)
     else:
         dataset = DATASET
+
+    # The global_feature_dim is already set in config before calling cross_validate_model
+    # No need to re-calculate or update it here.
 
     # Prepare K-Fold cross-validation
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
@@ -88,7 +100,6 @@ def cross_validate_model(
         "CV_rmse_ex": [], "CV_rmse_prob": [], "CV_rmse_combined": [],
         "CV_mse_ex": [], "CV_mse_prob": [], "CV_mse_combined": [],
         "CV_softdtw_ex": [], "CV_softdtw_prob": [], "CV_softdtw_combined": [],
-        #"CV_fastdtw_ex": [], "CV_fastdtw_prob": [], "CV_fastdtw_combined": [],
         "CV_sid_ex": [], "CV_sid_prob": [], "CV_sid_combined": [],
         "CV_sis_ex": [], "CV_sis_prob": [], "CV_sis_combined": [],
         "val_loss": [], "CV_best_epoch":[], "CV_weight_ex": [], "CV_weight_prob": []
@@ -122,7 +133,6 @@ def cross_validate_model(
 
         print(f"train_min: {train_min}, train_max: {train_max}")
 
-        #print("before load batch_size", batch_size)
         train_loader = DataLoader(
             train_subset,
             batch_size=batch_size,
@@ -138,17 +148,12 @@ def cross_validate_model(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         for batch in train_loader:
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-            #print("len(batch)",len(batch))
-            #print("len(batch[targets]",len(batch["targets"]))
-            #print(batch["targets"].shape)
 
         # Initialize model, loss functions, and optimizer
         model = GraphormerModel(config)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = model.to(device)
 
-        #SoftDTWLoss = SoftDTW(use_cuda=True, gamma=1.0, bandwidth=None)
-        #SoftDTWLoss = SoftDTWLossPyTorch(gamma=0.2, normalize=True)
         SoftDTWLoss = SoftDTW(use_cuda=True, gamma=0.2, bandwidth=None, normalize=True)
 
 
@@ -163,6 +168,9 @@ def cross_validate_model(
                 return nn.SmoothL1Loss()
             elif loss_fn == 'SID':
                 def sid_loss_wrapper(model_spectra, target_spectra, mask, threshold):
+                    # Debugging: Print inputs to sid_loss
+                    #print(f"[SID Debug] model_spectra min: {model_spectra.min()}, max: {model_spectra.max()}, has_zero: {(model_spectra == 0).any()}")
+                    #print(f"[SID Debug] target_spectra min: {target_spectra.min()}, max: {target_spectra.max()}, has_zero: {(target_spectra == 0).any()}")
                     return sid_loss(model_spectra, target_spectra, mask, threshold)
 
                 return sid_loss_wrapper
@@ -170,7 +178,6 @@ def cross_validate_model(
         criterion_ex = loss_fn_gen(loss_function_ex)
         criterion_prob = loss_fn_gen(loss_function_prob)
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-        #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
         loss_modifier = GradNorm(num_losses=2, alpha=alpha)
 
         patience = patience  # Early stopping patience 설정
@@ -190,7 +197,6 @@ def cross_validate_model(
         start_count_epoch = 100
         process = psutil.Process()
         for epoch in range(num_epochs):
-            #print("epochs left",epoch,"/",num_epochs)
             model.train()
             epoch_loss = 0.0
             loss_ex_list = []
@@ -206,12 +212,11 @@ def cross_validate_model(
                 gpu_used = torch.cuda.memory_allocated(device) / 1024 ** 2  # MiB
                 gpu_reserved = torch.cuda.memory_reserved(device) / 1024 ** 2  # MiB
                 cpu_ram = process.memory_info().rss / 1024 ** 2  # MiB
-                print(batchcount, gpu_used, gpu_reserved, cpu_ram)
+                print(batchcount, f"gpu_used: {gpu_used}, gpu_reserved: {gpu_reserved}, cpu_ram: {cpu_ram}")
 
-                batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-                batched_data = {k: batch[k] for k in ["x", "adj", "in_degree", "out_degree", "spatial_pos", "attn_bias", "edge_input", "attn_edge_type"]}
-                targets = batch["targets"]
-                outputs = model(batched_data, targets=targets, target_type=target_type)
+                batch_data_for_model = {k: v.to(device) for k, v in batch.items() if k != "targets"}
+                targets = batch["targets"].to(device)
+                outputs = model(batch_data_for_model, targets=targets, target_type=target_type)
 
                 if target_type == "ex_prob":
                     outputs_ex = outputs[:, :, 0:1] + 1e-8
@@ -219,7 +224,7 @@ def cross_validate_model(
 
                     # SID Loss를 사용할 경우 마스크 생성
                     if loss_function_ex == "SID":
-                        threshold = 1e-4
+                        threshold = 1e-8
                         mask_ex = torch.ones_like(outputs_ex, dtype=torch.bool)  # 모든 영역 포함 (조건부 수정 가능)
                         loss_ex = torch.stack([
                             criterion_ex(outputs_ex[i].unsqueeze(0), targets_ex[i].unsqueeze(0), mask_ex[i], threshold)
@@ -232,16 +237,12 @@ def cross_validate_model(
                             for i in range(outputs_ex.size(0))
                         ]).mean()
 
-                    # outputs_prob = torch.sigmoid(outputs[:, :, 1:2])
-                    # targets_prob = torch.sigmoid(targets[:, :, 1:2])
                     outputs_prob = outputs[:, :, 1:2] + 1e-8
                     targets_prob = targets[:, :, 1:2] + 1e-8
-                    #outputs_prob = torch.clamp(outputs[:, :, 1:2], min=1e-8)
-                    #targets_prob = torch.clamp(targets[:, :, 1:2], min=1e-8)
 
                     # SID Loss를 사용할 경우 마스크 생성
                     if loss_function_prob == "SID":
-                        threshold = 1e-4
+                        threshold = 1e-8
                         mask_prob = torch.ones_like(outputs_prob, dtype=torch.bool)  # 모든 영역 포함 (조건부 수정 가능)
                         loss_prob = torch.stack([
                             criterion_prob(outputs_prob[i].unsqueeze(0), targets_prob[i].unsqueeze(0), mask_prob[i],
@@ -271,12 +272,10 @@ def cross_validate_model(
                         normalized_loss_prob = loss_prob
 
                     # ✅ 매 배치마다 GradNorm 적용
-                    #weight = loss_modifier.compute_weights([loss_ex, loss_prob], model)
                     weight = loss_modifier.compute_weights([loss_ex, loss_prob], model)
                     weight_list.append(weight.detach().cpu().numpy()) ###### 바꾼부분
 
                     # ✅ 손실 값 계산
-                    # loss = weight_true[0] * loss_ex + weight_true[1] * loss_prob
                     loss = weight_true[0] * normalized_loss_ex + weight_true[1] * normalized_loss_prob
                 else:
                     raise ValueError("Invalid target type")
@@ -343,7 +342,6 @@ def cross_validate_model(
             "CV_rmse_ex": [], "CV_rmse_prob": [], "CV_rmse_combined": [],
             "CV_mse_ex": [], "CV_mse_prob": [], "CV_mse_combined": [],
             "CV_softdtw_ex": [], "CV_softdtw_prob": [], "CV_softdtw_combined": [],
-            #"CV_fastdtw_ex": [], "CV_fastdtw_prob": [], "CV_fastdtw_combined": [],
             "CV_sid_ex": [], "CV_sid_prob": [], "CV_sid_combined": [],
             "CV_sis_ex": [], "CV_sis_prob": [], "CV_sis_combined": []
         }
@@ -358,10 +356,9 @@ def cross_validate_model(
         }
         with torch.no_grad():
             for batch in val_loader:
-                batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-                batched_data = {k: batch[k] for k in ["x", "adj", "in_degree", "out_degree", "spatial_pos", "attn_bias", "edge_input", "attn_edge_type"]}
-                targets = batch["targets"]
-                outputs = model(batched_data, targets=targets, target_type=target_type)
+                batch_data_for_model = {k: v.to(device) for k, v in batch.items() if k != "targets"}
+                targets = batch["targets"].to(device)
+                outputs = model(batch_data_for_model, targets=targets, target_type=target_type)
 
                 for i in range(targets.size(0)):  # batch_size 만큼 루프
                     if target_type == "ex_prob":
@@ -382,10 +379,9 @@ def cross_validate_model(
                         val_metrics["CV_mae_prob"].append(mean_absolute_error(y_true_prob, y_pred_prob))
                         val_metrics["CV_mae_combined"].append(mean_absolute_error(y_true.flatten(), y_pred.flatten()))
 
-                        val_metrics["CV_rmse_ex"].append(mean_squared_error(y_true_ex, y_pred_ex, squared=False))
-                        val_metrics["CV_rmse_prob"].append(mean_squared_error(y_true_prob, y_pred_prob, squared=False))
-                        val_metrics["CV_rmse_combined"].append(
-                            mean_squared_error(y_true.flatten(), y_pred.flatten(), squared=False))
+                        val_metrics["CV_rmse_ex"].append(calculate_rmse(y_true_ex, y_pred_ex))
+                        val_metrics["CV_rmse_prob"].append(calculate_rmse(y_true_prob, y_pred_prob))
+                        val_metrics["CV_rmse_combined"].append(calculate_rmse(y_true.flatten(), y_pred.flatten()))
 
                         val_metrics["CV_mse_ex"].append(mean_squared_error(y_true_ex, y_pred_ex, ))
                         val_metrics["CV_mse_prob"].append(mean_squared_error(y_true_prob, y_pred_prob, ))
@@ -402,29 +398,31 @@ def cross_validate_model(
                                                                            torch.tensor(y_true).unsqueeze(0).to(
                                                                                device)).item())
 
-                        #fastdtw_ex, _ = fastdtw(torch.tensor(y_pred_ex), torch.tensor(y_true_ex))
-                        #fastdtw_prob, _ = fastdtw(torch.tensor(y_pred_prob), torch.tensor(y_true_prob))
-                        #fastdtw_combined, _ = fastdtw(torch.tensor(y_pred.flatten()), torch.tensor(y_true.flatten()))
-                        #val_metrics["CV_fastdtw_ex"].append(fastdtw_ex)
-                        #val_metrics["CV_fastdtw_prob"].append(fastdtw_prob)
-                        #val_metrics["CV_fastdtw_combined"].append(fastdtw_combined)
-
                         # SID 및 SIS 계산
-                        sid_ex = sid_loss(torch.tensor(y_pred_ex).unsqueeze(0).to(device),
-                                          torch.tensor(y_true_ex).unsqueeze(0).to(device),
+                        # Debugging: Print inputs to sid_loss during evaluation
+                        #print(f"[Eval SID Debug] y_pred_ex min: {np.min(y_pred_ex)}, max: {np.max(y_pred_ex)}, has_zero: {(y_pred_ex == 0).any()}")
+                        #print(f"[Eval SID Debug] y_true_ex min: {np.min(y_true_ex)}, max: {np.max(y_true_ex)}, has_zero: {(y_true_ex == 0).any()}")
+                        sid_ex = sid_loss(torch.tensor(y_pred_ex + 1e-8).unsqueeze(0).to(device),
+                                          torch.tensor(y_true_ex + 1e-8).unsqueeze(0).to(device),
                                           torch.ones_like(torch.tensor(y_pred_ex).unsqueeze(0), dtype=torch.bool).to(
                                               device),
-                                          threshold=1e-4).mean().item()
-                        sid_prob = sid_loss(torch.tensor(y_pred_prob).unsqueeze(0).to(device),
-                                            torch.tensor(y_true_prob).unsqueeze(0).to(device),
+                                          threshold=1e-8).mean().item()
+
+                        #print(f"[Eval SID Debug] y_pred_prob min: {np.min(y_pred_prob)}, max: {np.max(y_pred_prob)}, has_zero: {(y_pred_prob == 0).any()}")
+                        #print(f"[Eval SID Debug] y_true_prob min: {np.min(y_true_prob)}, max: {np.max(y_true_prob)}, has_zero: {(y_true_prob == 0).any()}")
+                        sid_prob = sid_loss(torch.tensor(y_pred_prob + 1e-8).unsqueeze(0).to(device),
+                                            torch.tensor(y_true_prob + 1e-8).unsqueeze(0).to(device),
                                             torch.ones_like(torch.tensor(y_pred_prob).unsqueeze(0), dtype=torch.bool).to(
                                                 device),
-                                            threshold=1e-4).mean().item()
-                        sid_combined = sid_loss(torch.tensor(y_pred).unsqueeze(0).to(device),
-                                                torch.tensor(y_true).unsqueeze(0).to(device),
+                                            threshold=1e-8).mean().item()
+
+                        #print(f"[Eval SID Debug] y_pred combined min: {np.min(y_pred)}, max: {np.max(y_pred)}, has_zero: {(y_pred == 0).any()}")
+                        #print(f"[Eval SID Debug] y_true combined min: {np.min(y_true)}, max: {np.max(y_true)}, has_zero: {(y_true == 0).any()}")
+                        sid_combined = sid_loss(torch.tensor(y_pred + 1e-8).unsqueeze(0).to(device),
+                                                torch.tensor(y_true + 1e-8).unsqueeze(0).to(device),
                                                 torch.ones_like(torch.tensor(y_pred).unsqueeze(0), dtype=torch.bool).to(
                                                     device),
-                                                threshold=1e-4).mean().item()
+                                                threshold=1e-8).mean().item()
 
                         # SID 결과값에 NaN이 있는지 확인 후 추가
                         if not math.isnan(sid_ex):
@@ -467,9 +465,9 @@ def cross_validate_model(
                         train_metrics["CV_train_mae_prob"].append(mean_absolute_error(y_true_prob, y_pred_prob))
                         train_metrics["CV_train_mae_combined"].append(mean_absolute_error(y_true.flatten(), y_pred.flatten()))
 
-                        train_metrics["CV_train_rmse_ex"].append(mean_squared_error(y_true_ex, y_pred_ex, squared=False))
-                        train_metrics["CV_train_rmse_prob"].append(mean_squared_error(y_true_prob, y_pred_prob, squared=False))
-                        train_metrics["CV_train_rmse_combined"].append(mean_squared_error(y_true.flatten(), y_pred.flatten(), squared=False))
+                        train_metrics["CV_train_rmse_ex"].append(calculate_rmse(y_true_ex, y_pred_ex))
+                        train_metrics["CV_train_rmse_prob"].append(calculate_rmse(y_true_prob, y_pred_prob))
+                        train_metrics["CV_train_rmse_combined"].append(calculate_rmse(y_true.flatten(), y_pred.flatten()))
 
                         train_metrics["CV_train_mse_ex"].append(mean_squared_error(y_true_ex, y_pred_ex))
                         train_metrics["CV_train_mse_prob"].append(mean_squared_error(y_true_prob, y_pred_prob))
@@ -547,7 +545,6 @@ def cross_validate_model(
         loss_function=loss_function,
         loss_function_ex=loss_function_ex,
         loss_function_prob=loss_function_prob,
-        #weight_ex=weight_ex,
         num_epochs=num_epochs,
         batch_size=batch_size,
         n_pairs=n_pairs,
@@ -572,10 +569,8 @@ def cross_validate_model(
     final_results["weight_ex_history"] = cv_metrics["CV_weight_ex"]
     final_results["weight_prob_history"] = cv_metrics["CV_weight_prob"]
 
-    #final_results["cv_loss_history"] = loss_history_all_folds
-
     if TEST_DATASET == None:
-        test_dataset = SMILESDataset(csv_file=testset_path, attn_bias_w=1.0, target_type=target_type)
+        test_dataset = SMILESDataset(csv_file=testset_path, attn_bias_w=1.0, target_type=target_type, nominal_feature_vocab=PREDEFINED_VOCAB, global_feature_names=global_feature_names)
     else:
         test_dataset = TEST_DATASET
 
@@ -599,25 +594,16 @@ def evaluate_on_test_set(model, test_loader, device, target_type):
         "test_mae_ex": [], "test_mae_prob": [], "test_mae_combined": [],
         "test_rmse_ex": [], "test_rmse_prob": [], "test_rmse_combined": [],
         "test_softdtw_ex": [], "test_softdtw_prob": [], "test_softdtw_combined": [],
-        #"test_fastdtw_ex": [], "test_fastdtw_prob": [], "test_fastdtw_combined": [],
         "test_sid_ex": [], "test_sid_prob": [], "test_sid_combined": [],
         "test_sis_ex": [], "test_sis_prob": [], "test_sis_combined": []
     }
     print("evaluating on test set")
-    #SoftDTWLoss = SoftDTW(use_cuda=True, gamma=1.0, bandwidth=None)
-    #SoftDTWLoss = SoftDTWLossPyTorch(gamma=0.2, normalize=True)
     SoftDTWLoss = SoftDTW(use_cuda=True, gamma=0.2, bandwidth=None, normalize=True)
     with torch.no_grad():
         for batch in test_loader:
-            batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-            batched_data = {k: batch[k] for k in
-                            ["x", "adj", "in_degree", "out_degree", "spatial_pos", "attn_bias", "edge_input",
-                             "attn_edge_type"]}
-            targets = batch["targets"]
-            #print("targets",targets.shape)
-            outputs = model(batched_data, targets=targets, target_type=target_type)
-            #outputs = torch.clamp(outputs, min=1e-8)
-            #print("targets", outputs.shape)
+            batch_data_for_model = {k: v.to(device) for k, v in batch.items() if k != "targets"}
+            targets = batch["targets"].to(device)
+            outputs = model(batch_data_for_model, targets=targets, target_type=target_type)
 
             for i in range(targets.size(0)):  # batch_size 만큼 루프
                 y_true = targets[i].cpu().numpy()
@@ -638,10 +624,9 @@ def evaluate_on_test_set(model, test_loader, device, target_type):
                 results["test_mae_prob"].append(mean_absolute_error(y_true_prob, y_pred_prob))
                 results["test_mae_combined"].append(mean_absolute_error(y_true.flatten(), y_pred.flatten()))
 
-                results["test_rmse_ex"].append(mean_squared_error(y_true_ex, y_pred_ex, squared=False))
-                results["test_rmse_prob"].append(mean_squared_error(y_true_prob, y_pred_prob, squared=False))
-                results["test_rmse_combined"].append(
-                    mean_squared_error(y_true.flatten(), y_pred.flatten(), squared=False))
+                results["test_rmse_ex"].append(calculate_rmse(y_true_ex, y_pred_ex))
+                results["test_rmse_prob"].append(calculate_rmse(y_true_prob, y_pred_prob))
+                results["test_rmse_combined"].append(calculate_rmse(y_true.flatten(), y_pred.flatten()))
 
                 # SoftDTW 및 FastDTW 계산
                 results["test_softdtw_ex"].append(
@@ -655,13 +640,6 @@ def evaluate_on_test_set(model, test_loader, device, target_type):
                 results["test_softdtw_combined"].append(SoftDTWLoss(torch.tensor(y_pred).unsqueeze(0).to(device),
                                                                       torch.tensor(y_true).unsqueeze(0).to(
                                                                           device)).item())
-
-                #fastdtw_ex, _ = fastdtw(torch.tensor(y_pred_ex), torch.tensor(y_true_ex))
-                #fastdtw_prob, _ = fastdtw(torch.tensor(y_pred_prob), torch.tensor(y_true_prob))
-                #fastdtw_combined, _ = fastdtw(torch.tensor(y_pred.flatten()), torch.tensor(y_true.flatten()))
-                #results["test_fastdtw_ex"].append(fastdtw_ex)
-                #results["test_fastdtw_prob"].append(fastdtw_prob)
-                #results["test_fastdtw_combined"].append(fastdtw_combined)
 
                 # SID 및 SIS 계산
                 sid_ex = sid_loss(torch.tensor(y_pred_ex).unsqueeze(0).to(device),
@@ -702,6 +680,9 @@ def evaluate_on_test_set(model, test_loader, device, target_type):
 
 
 if __name__ == "__main__":
+    
+
+    global_dim = 7 # Initialize global_dim with a fallback value
     config = {
         "num_atoms": 100,  # 분자의 최대 원자 수 (그래프의 노드 개수) 100
         "num_in_degree": 10,  # 그래프 노드의 최대 in-degree
@@ -723,14 +704,27 @@ if __name__ == "__main__":
         "q_noise": 0.0,  # Quantization noise (훈련 중 노이즈 추가를 위한 매개변수)
         "qn_block_size": 8,  # Quantization block 크기
         "output_size": 100,  # 모델 출력 크기
+        "global_feature_dim": global_dim, # Dynamically set global feature dimension
     }
-    #     final_loss = cross_validate_model(config=config, target_type="ex_prob",dataset_path="../../graphormer_data/train_50.csv", num_epochs=10, n_pairs=50, n_splits=5,loss_function_ex="MAE",loss_function_prob="MAE")
     results_list = []
     loss_fn_list = ["SID"]
+    # --- MODIFICATION START ---
+    global_feature_names = ['Solvent', 'Temperature', 'Pressure']
+    from Graphormer.GP5.data_prepare.Dataloader_QMData import get_global_feature_info
+    try:
+        temp_dataset_path = "../../graphormer_data/train_50_with_features.csv"
+        global_dim, nominal_dims = get_global_feature_info(temp_dataset_path, global_feature_names)
+        config["global_feature_dim"] = global_dim
+    except Exception as e:
+        print(f"Error getting global feature info: {e}. Using fallback values.")
+        config["global_feature_dim"] = 7 # Fallback if file not found or other error
+        nominal_dims = {}
+    # --- MODIFICATION END ---
     for loss_fn in loss_fn_list:
-        cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../graphormer_data/train_1000.csv", testset_path="../../graphormer_data/test_100.csv",
-                                         num_epochs=100, n_pairs=50, n_splits=5, loss_function_ex=loss_fn,
-                                         loss_function_prob=loss_fn)
+        cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../graphormer_data/train_50_with_features.csv", testset_path="../../graphormer_data/test_10_with_features.csv",
+                                         num_epochs=10, n_pairs=50, n_splits=5, loss_function_ex=loss_fn,
+                                         loss_function_prob=loss_fn, global_feature_names=global_feature_names,
+                                         )
         cv_result["loss_function"] = loss_fn
         results_list.append(cv_result)
         df = pd.DataFrame(results_list)

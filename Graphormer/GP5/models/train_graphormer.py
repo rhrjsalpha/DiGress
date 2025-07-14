@@ -42,7 +42,7 @@ target_type = 'default' # 'default' "ex_prob" "nm_distribution"
 print("target_type: ",target_type)
 
 # Initialize dataset and DataLoader
-dataset = SMILESDataset(csv_file="../../data/data_example.csv", attn_bias_w=1.0,target_type=target_type)  # Include edge weight
+dataset = SMILESDataset(csv_file="../../graphormer_data/data_example.csv", attn_bias_w=1.0, target_type=target_type)  # Include edge weight
 #  DataLoader가 생성한 데이터 배치로, 보통 (input_data, target) 형태의 튜플
 dataloader = DataLoader(
     dataset,
@@ -82,7 +82,7 @@ criterion_prob = loss_fn_gen(loss_function_prob)  # For 'prob' part (예: Binary
 
 def move_to_device(batch, device):
     """
-    Move batch data to the specified device.
+    Move batch graphormer_data to the specified device.
     """
     return {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
@@ -99,7 +99,7 @@ for epoch in range(num_epochs):
     model.train()
     total_loss = 0.0
     for batch in dataloader:
-        # Move batch data to the device
+        # Move batch graphormer_data to the device
         batch = move_to_device(batch, device)
 
         # Extract inputs and targets

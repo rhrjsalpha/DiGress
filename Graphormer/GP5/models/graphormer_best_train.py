@@ -25,7 +25,7 @@ def train_model(
     batch_size=2,
     n_pairs=1,
     learning_rate=0.001,
-    dataset_path="../../data/data_example.csv",
+    dataset_path="../../graphormer_data/data_example.csv",
 ):
     """
     Train the Graphormer model with specified configurations and return the final loss.

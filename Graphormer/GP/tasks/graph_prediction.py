@@ -289,7 +289,7 @@ class GraphPredictionWithFlagTask(GraphPredictionTask):
 
         Args:
             sample (dict): the mini-batch. The format is defined by the
-                :class:`~fairseq.data.FairseqDataset`.
+                :class:`~fairseq.graphormer_data.FairseqDataset`.
             model (~fairseq.models.BaseFairseqModel): the model
             criterion (~fairseq.criterions.FairseqCriterion): the criterion
             optimizer (~fairseq.optim.FairseqOptimizer): the optimizer

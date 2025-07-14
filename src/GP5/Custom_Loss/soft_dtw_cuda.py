@@ -114,7 +114,7 @@ def compute_softdtw_backward_cuda(D, R, inv_gamma, bandwidth, max_i, max_j, n_pa
 class _SoftDTWCUDA(Function):
     """
     CUDA implementation is inspired by the diagonal one proposed in https://ieeexplore.ieee.org/document/8400444:
-    "Developing a pattern discovery method in time series data and its GPU acceleration"
+    "Developing a pattern discovery method in time series graphormer_data and its GPU acceleration"
     """
 
     @staticmethod

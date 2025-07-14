@@ -65,7 +65,7 @@ class QM9Dataset(InMemoryDataset):
 
     def __init__(self, stage, root, remove_h: bool, transform=None, pre_transform=None, pre_filter=None):
         """ stage: train, val, test
-            root: data directory
+            root: graphormer_data directory
             remove_h: remove hydrogens
             target_prop: property to predict (for guidance only).
         """

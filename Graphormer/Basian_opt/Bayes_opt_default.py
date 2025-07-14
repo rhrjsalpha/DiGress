@@ -379,15 +379,15 @@ fixed_params = {
             #"n_pairs": [5],
         }
 
-dataset = SMILESDataset(csv_file="../data/train_50.csv", attn_bias_w=1.0, target_type="default")
-test_dataset = SMILESDataset(csv_file="../data/train_50.csv", attn_bias_w=1.0, target_type="default")
+dataset = SMILESDataset(csv_file="../graphormer_data/train_50.csv", attn_bias_w=1.0, target_type="default")
+test_dataset = SMILESDataset(csv_file="../graphormer_data/train_50.csv", attn_bias_w=1.0, target_type="default")
 
 results_df = bayesian_optimization_param_grid(
     param_bounds=param_bounds,
     fixed_params=fixed_params,
     train_function=train_model,
-    dataset_path="../data/train_50.csv",
-    testset_path="../data/train_50.csv",
+    dataset_path="../graphormer_data/train_50.csv",
+    testset_path="../graphormer_data/train_50.csv",
     verbose=True,
     CV=True,
     init_points=3,

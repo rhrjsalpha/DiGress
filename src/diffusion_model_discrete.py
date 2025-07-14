@@ -529,7 +529,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         return utils.PlaceHolder(X=probX0, E=probE0, y=proby0)
 
     ##### apply_noise 설명 #####
-    # 각 분자 x에 대해 무작위로 하나의 timestep t를 선택하여 해당 시점 zt 의 noisy 데이터 를 만들고, 이로부터 clean data x를 복원하는 것을 학습합니다.
+    # 각 분자 x에 대해 무작위로 하나의 timestep t를 선택하여 해당 시점 zt 의 noisy 데이터 를 만들고, 이로부터 clean graphormer_data x를 복원하는 것을 학습합니다.
     # 분자 (샘플) inde, 샘플링된 t
     # 0	37
     # 1	92
@@ -542,7 +542,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
     ####################################
 
     def apply_noise(self, X, E, y, node_mask, t_int=None): # 위쪽에 train, val, test 쪽에서 사용됨
-        """ Sample noise and apply it to the data. """
+        """ Sample noise and apply it to the graphormer_data. """
 
         ### Sample a timestep t. | diffusion 시점 t 샘플링
         ### When evaluating, the loss for t=0 is computed separately | 학습 중에는 t=0∼T, 테스트/validation 시에는 t=1∼T만 (t=0은 평가용)

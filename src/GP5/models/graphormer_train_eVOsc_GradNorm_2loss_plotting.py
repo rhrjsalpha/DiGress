@@ -94,7 +94,7 @@ def train_model_ex_porb(
     batch_size=50,
     n_pairs = 1,
     learning_rate=0.001,
-    dataset_path="../../data/data_example.csv",
+    dataset_path="../../graphormer_data/data_example.csv",
     patience = 20,
     DATASET = None,
     plt_mode = None
@@ -128,9 +128,9 @@ def train_model_ex_porb(
         batch_size=batch_size,
         collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs),
     )
-    #for data in dataloader:
-    #    for key in data:
-    #        print(key, data[key].shape)
+    #for graphormer_data in dataloader:
+    #    for key in graphormer_data:
+    #        print(key, graphormer_data[key].shape)
     # Initialize the model, loss function, and optimizer
     model = GraphormerModel(config)
     #SoftDTWLoss = SoftDTW(use_cuda=True, gamma=1.0, bandwidth=None)
@@ -221,7 +221,7 @@ def train_model_ex_porb(
                 print("NaN detected in model outputs!")
                 print(f"Sample outputs: {outputs}")
                 #print(targets)
-                raise ValueError("NaN values found in model outputs, check data and model configuration.")
+                raise ValueError("NaN values found in model outputs, check graphormer_data and model configuration.")
 
             # Compute loss
             if target_type == "ex_prob":
@@ -407,7 +407,7 @@ def train_model_ex_porb(
             #outputs = torch.clamp(outputs, min=1e-8)
             if torch.isnan(outputs).any() or torch.isinf(outputs).any():
                 print("NaN detected in model outputs!")
-                raise ValueError("NaN values found in model outputs, check data and model configuration.")
+                raise ValueError("NaN values found in model outputs, check graphormer_data and model configuration.")
 
                 # 🔥 예측값 저장 (모든 배치에서 저장)
 
@@ -649,7 +649,7 @@ if __name__ == "__main__":
             final_loss = train_model_ex_porb(
                 config=config,
                 target_type=target_type,
-                dataset_path="../../data/train_1000.csv",
+                dataset_path="../../graphormer_data/train_1000.csv",
                 loss_function_ex=loss_ex,
                 loss_function_prob=loss_prob,
                 learning_rate=0.001,
