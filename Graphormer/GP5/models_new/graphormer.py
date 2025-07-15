@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from Graphormer.GP5.modules.graphormer_graph_encoder import GraphormerGraphEncoder
+from Graphormer.GP5.modules_ir_attention.graphormer_graph_encoder import GraphormerGraphEncoder
 
 
 def init_graphormer_params(module):

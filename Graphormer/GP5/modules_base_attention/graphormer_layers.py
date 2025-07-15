@@ -18,10 +18,11 @@ def init_params(module, n_layers):
         #print(f"Weight after initialization: {module.weight.shape}")
 
 class GraphNodeFeature(nn.Module):
-    def __init__(self, num_heads, num_atoms, num_in_degree, num_out_degree, hidden_dim, n_layers):
+    def __init__(self, num_heads, num_atoms, num_in_degree, num_out_degree, hidden_dim, n_layers, global_feature_dim=0):
         super(GraphNodeFeature, self).__init__()
         self.num_heads = num_heads
         self.hidden_dim = hidden_dim
+        self.global_feature_dim = global_feature_dim
 
         # 각각의 feature encoding
         self.atom_encoder = nn.Embedding(num_atoms + 1, hidden_dim, padding_idx=0)
@@ -35,7 +36,17 @@ class GraphNodeFeature(nn.Module):
             nn.Linear(hidden_dim, hidden_dim)
         )
 
-        self.graph_token = nn.Embedding(1, hidden_dim)
+        # CLS 토큰은 특정 분자 자체의 속성을 나타내기보다는, 그래프 전체의 정보를 집약하고 요약하는 역할을 합니다. #
+        # 트랜스포머의 셀프 어텐션 메커니즘을 통해, 이 CLS 토큰은 그래프 내의 모든 다른 노드(원자 노드, 글로벌 노드)와 상호작용하며 그래프 전체의 맥락적 표현을 학습 #
+
+        self.graph_token = nn.Embedding(1, hidden_dim) # CLS 토큰의 "피처 값" 자체는 배치 내의 모든 분자에서 동일한 학습된 벡터를 사용
+
+        # New global node embedding
+        if self.global_feature_dim > 0:
+            self.new_global_node_embedding = nn.Linear(self.global_feature_dim, hidden_dim)
+        else:
+            self.new_global_node_embedding = None
+
         self.apply(lambda module: init_params(module, n_layers=n_layers))
 
     def forward(self, batched_data):
@@ -55,9 +66,16 @@ class GraphNodeFeature(nn.Module):
         node_feature = torch.cat([atom_feat, in_deg_feat, out_deg_feat], dim=-1)  # [B, N, D*3]
         node_feature = self.feature_mlp(node_feature)  # [B, N, D]
 
-        # 가상 노드 추가
+        # 가상 노드 (CLS/VNode) 추가
         graph_token_feature = self.graph_token.weight.unsqueeze(0).repeat(n_graph, 1, 1)
-        graph_node_feature = torch.cat([graph_token_feature, node_feature], dim=1)
+
+        # 새로운 글로벌 노드 추가 (Graphormer-IR 방식)
+        if self.new_global_node_embedding is not None:
+            global_features = batched_data["global_features"]
+            new_global_node_feature = self.new_global_node_embedding(global_features).unsqueeze(1)
+            graph_node_feature = torch.cat([graph_token_feature, new_global_node_feature, node_feature], dim=1)
+        else:
+            graph_node_feature = torch.cat([graph_token_feature, node_feature], dim=1)
 
         return graph_node_feature
 
@@ -92,7 +110,9 @@ class GraphAttnBias(nn.Module):
                 num_edge_dis * num_heads * num_heads, 1
             )
 
+        ## Edge Flag / 가상 거리 (Virtual Distance) 정의 및 적용 ##
         self.graph_token_virtual_distance = nn.Embedding(1, num_heads)
+        self.new_global_node_virtual_distance = nn.Embedding(1, num_heads) # Added for new global node
 
         self.apply(lambda module: init_params(module, n_layers=n_layers))
 
@@ -106,14 +126,22 @@ class GraphAttnBias(nn.Module):
             batched_data["edge_input"],
             batched_data["attn_edge_type"], # In Ring
         )
-
+        #print("-----GraphAttnBias_inputs------")
+        print('attn_bias', attn_bias.shape, attn_bias.dtype)
+        print('spatial_pos', spatial_pos.shape, spatial_pos.dtype)
+        #print("spatial_pos min:", spatial_pos.min().item())
+        #print("spatial_pos max:", spatial_pos.max().item())
+        #print("embedding weight size:", self.spatial_pos_encoder.weight.size(0))
+        print('x', x.shape, x.dtype)
+        print('edge_input', edge_input.shape, edge_input.dtype)
+        print('attn_edge_type', attn_edge_type.shape, attn_edge_type.dtype)
+        #print("--------------------------------")
         ##################################################
         #### 적절한 텐서 크기를 가지도록 텐서를 생성하는 과정 ####
         ##################################################
         n_graph, n_node = x.size()[:2]
         graph_attn_bias = attn_bias.clone() # attn_bias를 복사해 graph_attn_bias에 넣는다. [batch,node,node]
 
-        #print("축 추가전",graph_attn_bias.shape)
         graph_attn_bias = graph_attn_bias.unsqueeze(1).repeat(
             1, self.num_heads, 1, 1
         ) # multi-head attention을 위한 head 축을 추가 [batch,head,node,node]
@@ -129,20 +157,34 @@ class GraphAttnBias(nn.Module):
         ############################################## [batch,head,node,node] + [batch,head,node,node]
 
         ### Add virtual distance for the graph token 가상노드와의 distance 인 1을 추가 ###
-        t = self.graph_token_virtual_distance.weight.view(1, self.num_heads, 1)
+        # t = self.graph_token_virtual_distance.weight.view(1, self.num_heads, 1)
         #print("t, Add virtual distance for the graph token", t.shape) # [1, head, 1]
 
         # 기존 graph_attn_bias 크기: [batch_size, num_heads, num_nodes, num_nodes]
         batch_size, num_heads, num_nodes, _ = graph_attn_bias.size()
 
-        # 가상 노드를 포함하도록 크기 확장
-        new_bias = torch.zeros(batch_size, num_heads, num_nodes + 1, num_nodes + 1, device=graph_attn_bias.device)
-        new_bias[:, :, 1:, 1:] = graph_attn_bias  # 기존 bias를 새로운 위치에 복사
+        # 가상 노드를 포함하도록 크기 확장 (CLS + New Global Node + Nodes)
+        print(batch_size, num_heads, num_nodes, num_nodes)
+        new_bias = torch.full((batch_size, num_heads, num_nodes + 2, num_nodes + 2), -1e9, device=graph_attn_bias.device)
+        new_bias[:, :, 2:, 2:] = graph_attn_bias  # 기존 bias를 새로운 위치 (인덱스 2부터)에 복사
 
-        # 가상 노드와의 거리 추가
-        new_bias[:, :, 1:, 0] = t  # 세로축 가상 distance , virtual node 정보가 0번째 세로축에 추가
-        new_bias[:, :, 0, 1:] = t  # 가로축 가상 distance , virtual node 정보가 0번째 가로축에 추가
-        #print("new_bias", new_bias.shape) # [batch_size, num_heads, num_nodes + 1, num_nodes + 1]
+        ### 가상거리를 `new_bias` 행렬에 적용하는 부분 ###
+        # CLS/VNode (인덱스 0)와의 거리 추가
+        t_cls = self.graph_token_virtual_distance.weight.view(1, self.num_heads, 1)
+        new_bias[:, :, 1:, 0] = t_cls  # CLS -> New Global Node, Nodes
+        new_bias[:, :, 0, 1:] = t_cls  # New Global Node, Nodes -> CLS
+
+        # New Global Node (인덱스 1)와의 거리 추가
+        t_new_global = self.new_global_node_virtual_distance.weight.view(1, self.num_heads, 1)
+        # New Global Node -> CLS/VNode
+        new_bias[:, :, 0, 1] = t_new_global.squeeze(-1) # CLS -> New Global Node
+        new_bias[:, :, 1, 0] = t_new_global.squeeze(-1) # New Global Node -> CLS
+
+        # New Global Node -> Nodes (모든 원자와 가상의 '거리 1'로 연결)
+        new_bias[:, :, 2:, 1] = t_new_global # Nodes -> New Global Node
+        new_bias[:, :, 1, 2:] = t_new_global # New Global Node -> Nodes
+
+        #print("new_bias", new_bias.shape) # [batch_size, num_heads, num_nodes + 2, num_nodes + 2]
 
         #print("spatial_pos shape before:", spatial_pos.shape)
 
@@ -182,11 +224,13 @@ class GraphAttnBias(nn.Module):
 
         #print("edge_input, last", edge_input.shape)
         #print("new_bias[:, :, :, :], last", new_bias[:, :, :, :].shape)
-        new_bias[:, :, 1:, 1:] += edge_input
+        new_bias[:, :, 2:, 2:] += edge_input
         #print("new_bias += edge_input", new_bias.shape)
 
         #print("attn_bias.shape", attn_bias.shape)
-        new_bias[:, :, 1:, 1:] += attn_bias.unsqueeze(1)
+        
         #print("new_bias += attn_bias", new_bias.shape)
 
-        return new_bias
+        
+        
+        return new_bias.view(batch_size * num_heads, num_nodes + 2, num_nodes + 2)

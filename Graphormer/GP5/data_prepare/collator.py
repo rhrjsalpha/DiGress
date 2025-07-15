@@ -121,8 +121,35 @@ def collator(items, max_node=512, multi_hop_max_dist=20, spatial_pos_max=20):
     attn_bias = torch.cat(
         [pad_attn_bias_unsqueeze(i, max_node_num + 1) for i in attn_biases]
     )
+    processed_attn_edge_types = []
+    for original_attn_edge_type in attn_edge_types:
+        num_atoms = original_attn_edge_type.size(0)
+        # Create a new tensor with space for CLS (0) and Global (1) nodes
+        # and an additional dimension for is_global flag
+        # Shape: [num_atoms + 2, num_atoms + 2, 2]
+        new_edge_type_tensor = torch.zeros(
+            (num_atoms + 2, num_atoms + 2, 2), dtype=torch.long, device=original_attn_edge_type.device
+        )
+
+        # 1. Atom-Atom edges (indices 2: to end)
+        # Copy original combined_id
+        new_edge_type_tensor[2:, 2:, 0] = original_attn_edge_type.squeeze(-1)
+        # is_global for atom-atom is 0 (already initialized to 0)
+
+        # 2. Global Node (index 1) <-> Atom (index 2:) edges
+        # Set combined_id to 0 (or a special ID if needed, but 0 is fine for padding)
+        # Set is_global to 1
+        new_edge_type_tensor[1, 2:, 1] = 1  # Global -> Atom
+        new_edge_type_tensor[2:, 1, 1] = 1  # Atom -> Global
+
+        # 3. CLS Node (index 0) <-> All other nodes (1:) edges
+        # Set combined_id to 0
+        # Set is_global to 0 (already initialized to 0)
+
+        processed_attn_edge_types.append(new_edge_type_tensor)
+
     attn_edge_type = torch.cat(
-        [pad_edge_type_unsqueeze(i, max_node_num) for i in attn_edge_types]
+        [pad_edge_type_unsqueeze(i, max_node_num + 2) for i in processed_attn_edge_types]
     )
     spatial_pos = torch.cat(
         [pad_spatial_pos_unsqueeze(i, max_node_num) for i in spatial_poses]

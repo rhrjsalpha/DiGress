@@ -9,7 +9,7 @@ import torch.nn as nn
 
 def quant_noise(module, p, block_size):
     """
-    Wraps modules and applies quantization noise to the weights for
+    Wraps modules_ir_attention and applies quantization noise to the weights for
     subsequent quantization with Iterative Product Quantization as
     described in "Training with Quantization Noise for Extreme Model Compression"
 
@@ -20,7 +20,7 @@ def quant_noise(module, p, block_size):
 
     Remarks:
         - Module weights must have the right sizes wrt the block size
-        - Only Linear, Embedding and Conv2d modules are supported for the moment
+        - Only Linear, Embedding and Conv2d modules_ir_attention are supported for the moment
         - For more detail on how to quantize by blocks with convolutional weights,
           see "And the Bit Goes Down: Revisiting the Quantization of Neural Networks"
         - We implement the simplest form of noise here as stated in the paper
@@ -31,7 +31,7 @@ def quant_noise(module, p, block_size):
     if p <= 0:
         return module
 
-    # supported modules
+    # supported modules_ir_attention
     assert isinstance(module, (nn.Linear, nn.Embedding, nn.Conv2d))
 
     # test whether module.weight has the right sizes wrt block_size

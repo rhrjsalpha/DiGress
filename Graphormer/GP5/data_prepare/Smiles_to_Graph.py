@@ -20,44 +20,63 @@ class GraphDataset:
             raise ValueError("Graph has invalid or missing edge features.")
         return graph
 
-    def extract_node_features(self, smiles):  # 🔧 실제 노드 feature 추출용 함수 추가
+    def get_bond_feature_id(self, bond):
+        bond_type_map = {
+            Chem.rdchem.BondType.SINGLE: 0,
+            Chem.rdchem.BondType.DOUBLE: 1,
+            Chem.rdchem.BondType.TRIPLE: 2,
+            Chem.rdchem.BondType.AROMATIC: 3,
+        }
+        
+        bond_type = bond_type_map.get(bond.GetBondType(), 0)
+        is_conjugated = int(bond.GetIsConjugated())
+        is_in_ring = int(bond.IsInRing())
+        
+        stereo_map = {
+            Chem.rdchem.BondStereo.STEREONONE: 0,
+            Chem.rdchem.BondStereo.STEREOANY: 0, # Treat ANY as NONE
+            Chem.rdchem.BondStereo.STEREOZ: 1,
+            Chem.rdchem.BondStereo.STEREOE: 2,
+            Chem.rdchem.BondStereo.STEREOCIS: 3,
+            Chem.rdchem.BondStereo.STEREOTRANS: 4,
+        }
+        stereo = stereo_map.get(bond.GetStereo(), 0)
+
+        # Combine features to create a unique ID
+        # 4 (bond_type) * 2 (is_conjugated) * 2 (is_in_ring) * 6 (stereo) = 96
+        feature_id = bond_type + is_conjugated * 4 + is_in_ring * 8 + stereo * 16
+        return feature_id + 1 # Add 1 to reserve 0 for padding
+
+    def preprocess_graph(self, smiles):
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
             raise ValueError(f"Invalid SMILES: {smiles}")
 
-        node_feats = []
+        num_nodes = mol.GetNumAtoms()
+
+        # Node features
+        node_features = []
         for atom in mol.GetAtoms():
-            atom_type = atom.GetAtomicNum()                # 원자 번호 (e.g., C=6)
-            formal_charge = atom.GetFormalCharge()         # 형식 전하
-            hybrid = int(atom.GetHybridization())          # Hybridization: SP=1, SP2=2, ...
-            aromatic = int(atom.GetIsAromatic())           # 방향족 여부
-            num_H = atom.GetTotalNumHs()
+            node_features.append([
+                atom.GetAtomicNum(),
+                atom.GetFormalCharge(),
+                int(atom.GetHybridization()),
+                int(atom.GetIsAromatic()),
+                atom.GetTotalNumHs()
+            ])
+        node_features = torch.tensor(node_features, dtype=torch.long)
 
-            node_feats.append([atom_type, formal_charge, hybrid, aromatic, num_H])
-        return torch.tensor(node_feats, dtype=torch.long)
-
-    def preprocess_graph(self, graph, smiles=None):  # 🔧 smiles 인자 추가
-        num_nodes = graph['num_nodes']
-        edge_index = graph['edge_index']
-        edge_attr = graph.get('edge_feat', None)
-        if edge_attr is None:
-            raise ValueError("Missing edge features")
-
-        # 🔧 RDKit 기반 실제 노드 feature 사용
-        if smiles is not None:
-            node_features = self.extract_node_features(smiles)
-        else:
-            raise ValueError("SMILES string is required to extract RDKit features")
-
-        # Adjacency matrix 생성
+        # Adjacency matrix and Edge feature matrix
         adj = torch.zeros((num_nodes, num_nodes), dtype=torch.bool)
-        adj[edge_index[0], edge_index[1]] = True
+        attn_edge_type = torch.zeros((num_nodes, num_nodes, 1), dtype=torch.long)
 
-        # Edge feature matrix
-        if len(edge_attr.shape) == 1:
-            edge_attr = edge_attr[:, None]
-        attn_edge_type = torch.zeros((num_nodes, num_nodes, edge_attr.shape[-1]), dtype=torch.long)
-        attn_edge_type[edge_index[0], edge_index[1]] = torch.tensor(edge_attr, dtype=torch.long) + 1
+        for bond in mol.GetBonds():
+            i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            adj[i, j] = adj[j, i] = True
+            bond_id = self.get_bond_feature_id(bond)
+            attn_edge_type[i, j, 0] = attn_edge_type[j, i, 0] = bond_id
+
+        # ... (rest of the function remains the same)
 
         # 최단 경로 거리 계산
         shortest_path = self.compute_shortest_paths(adj.numpy())
@@ -97,7 +116,7 @@ class GraphDataset:
         return edge_input
 
     def __getitem__(self, index):
-        return self.preprocess_graph(self.graphs[index], self.smiles_list[index])  # 🔧 smiles 추가 전달
+        return self.preprocess_graph(self.smiles_list[index])
 
     def __len__(self):
         return len(self.graphs)

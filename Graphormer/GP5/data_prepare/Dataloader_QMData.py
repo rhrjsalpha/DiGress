@@ -227,6 +227,7 @@ class SMILESDataset(Dataset):
 
     def preprocess_graph(self, graph):
         num_nodes = graph["num_nodes"]
+        #print(f"[DEBUG] Original num_nodes: {num_nodes}")
         edge_index = torch.tensor(graph["edge_index"], dtype=torch.long)
         edge_attr = graph.get("edge_feat")
         x = torch.tensor(graph["node_feat"], dtype=torch.long)
@@ -248,10 +249,12 @@ class SMILESDataset(Dataset):
         attn_edge_type[edge_index[0], edge_index[1]] = edge_attr + 1
 
         spatial_pos = torch.tensor(self.compute_shortest_paths(adj.numpy()), dtype=torch.long)
+        #print(f"[DEBUG] spatial_pos shape after creation: {spatial_pos.shape}")
 
         attn_bias = torch.zeros((num_nodes, num_nodes), dtype=torch.float)
         for e_idx, (src, tgt) in enumerate(zip(edge_index[0], edge_index[1])):
             attn_bias[src, tgt] = self.attn_bias_weight * edge_attr[e_idx].sum().float()
+        #print(f"[DEBUG] attn_bias shape after creation: {attn_bias.shape}")
 
         edge_input = self.generate_edge_input(spatial_pos, attn_edge_type, self.multi_hop_max_dist)
 
@@ -317,15 +320,24 @@ def collate_fn(batch, ds, n_pairs=None, min_max=None):
     globals_feat = torch.stack([b[3] for b in batch]) if batch and batch[0][3].numel() > 0 else None
 
     max_nodes = max(g["x"].size(0) for g in graphs) if graphs else 0
+    #print(f"[DEBUG] max_nodes in collate_fn: {max_nodes}")
 
     x = torch.stack([pad_tensor_x(g["x"], max_nodes) for g in graphs])
+    #print(f"[DEBUG] Padded x shape: {x.shape}")
     adj = torch.stack([pad_tensor(g["adj"], max_nodes, pad_dim=2) for g in graphs])
+    #print(f"[DEBUG] Padded adj shape: {adj.shape}")
     in_deg = torch.stack([pad_tensor_1d(g["in_degree"], max_nodes) for g in graphs])
+    #print(f"[DEBUG] Padded in_deg shape: {in_deg.shape}")
     out_deg = torch.stack([pad_tensor_1d(g["out_degree"], max_nodes) for g in graphs])
+    #print(f"[DEBUG] Padded out_deg shape: {out_deg.shape}")
     spatial = torch.stack([pad_tensor(g["spatial_pos"], max_nodes, 2) for g in graphs])
+    #print(f"[DEBUG] Padded spatial_pos shape: {spatial.shape}")
     attn_bias = torch.stack([pad_tensor(g["attn_bias"], max_nodes, 2) for g in graphs])
+    #print(f"[DEBUG] Padded attn_bias shape: {attn_bias.shape}")
     attn_et = torch.stack([pad_tensor(g["attn_edge_type"], max_nodes, 3) for g in graphs])
+    #print(f"[DEBUG] Padded attn_et shape: {attn_et.shape}")
     edge_in = torch.stack([pad_tensor(g["edge_input"], max_nodes, 4) for g in graphs])
+    #print(f"[DEBUG] Padded edge_input shape: {edge_in.shape}")
 
     if ds.target_type == "ex_prob":
         all_tg = ds.process_targets(n_pairs=n_pairs)

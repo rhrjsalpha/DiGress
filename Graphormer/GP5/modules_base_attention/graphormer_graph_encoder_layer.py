@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from Graphormer.GP5.modules_ir_attention.multihead_attention import MultiheadAttention
-from Graphormer.GP5.modules_ir_attention.quant_noise import quant_noise
+from Graphormer.GP5.modules_base_attention.multihead_attention import MultiheadAttention
+from Graphormer.GP5.modules_base_attention.quant_noise import quant_noise
 
 
 class GraphormerGraphEncoderLayer(nn.Module):

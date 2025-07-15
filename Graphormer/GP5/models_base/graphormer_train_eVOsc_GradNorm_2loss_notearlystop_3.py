@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from Graphormer.GP5.data_prepare.Dataloader_QMData import SMILESDataset, collate_fn
-from Graphormer.GP5.models_new.graphormer_3 import GraphormerModel
+from Graphormer.GP5.models_base.graphormer_3 import GraphormerModel
 import os
 from Graphormer.GP5.Custom_Loss.custom_loss import fastdtw_loss
 from Graphormer.GP5.Custom_Loss.soft_dtw_cuda import SoftDTW
@@ -301,27 +301,27 @@ def train_model_ex_porb(
 
                 # SID 및 SIS 계산
                 # Debugging: Print inputs to sid_loss during evaluation
-                print(f"[Eval SID Debug] y_pred_ex min: {np.min(y_pred_ex)}, max: {np.max(y_pred_ex)}, has_zero: {(y_pred_ex == 0).any()}")
-                print(f"[Eval SID Debug] y_true_ex min: {np.min(y_true_ex)}, max: {np.max(y_true_ex)}, has_zero: {(y_true_ex == 0).any()}")
+                #print(f"[Eval SID Debug] y_pred_ex min: {np.min(y_pred_ex)}, max: {np.max(y_pred_ex)}, has_zero: {(y_pred_ex == 0).any()}")
+                #print(f"[Eval SID Debug] y_true_ex min: {np.min(y_true_ex)}, max: {np.max(y_true_ex)}, has_zero: {(y_true_ex == 0).any()}")
                 # Debugging: Print inputs to sid_loss during evaluation
-                print(f"[Eval SID Debug] y_pred_ex min: {np.min(y_pred_ex)}, max: {np.max(y_pred_ex)}, has_zero: {(y_pred_ex == 0).any()}")
-                print(f"[Eval SID Debug] y_true_ex min: {np.min(y_true_ex)}, max: {np.max(y_true_ex)}, has_zero: {(y_true_ex == 0).any()}")
+                #print(f"[Eval SID Debug] y_pred_ex min: {np.min(y_pred_ex)}, max: {np.max(y_pred_ex)}, has_zero: {(y_pred_ex == 0).any()}")
+                #print(f"[Eval SID Debug] y_true_ex min: {np.min(y_true_ex)}, max: {np.max(y_true_ex)}, has_zero: {(y_true_ex == 0).any()}")
                 sid_ex = sid_loss(torch.tensor(y_pred_ex + 1e-8).unsqueeze(0).to(device),
                                   torch.tensor(y_true_ex + 1e-8).unsqueeze(0).to(device),
                                   torch.ones_like(torch.tensor(y_pred_ex).unsqueeze(0), dtype=torch.bool).to(
                                       device),
                                   threshold=1e-8).mean().item()
 
-                print(f"[Eval SID Debug] y_pred_prob min: {np.min(y_pred_prob)}, max: {np.max(y_pred_prob)}, has_zero: {(y_pred_prob == 0).any()}")
-                print(f"[Eval SID Debug] y_true_prob min: {np.min(y_true_prob)}, max: {np.max(y_true_prob)}, has_zero: {(y_true_prob == 0).any()}")
+                #print(f"[Eval SID Debug] y_pred_prob min: {np.min(y_pred_prob)}, max: {np.max(y_pred_prob)}, has_zero: {(y_pred_prob == 0).any()}")
+                #print(f"[Eval SID Debug] y_true_prob min: {np.min(y_true_prob)}, max: {np.max(y_true_prob)}, has_zero: {(y_true_prob == 0).any()}")
                 sid_prob = sid_loss(torch.tensor(y_pred_prob + 1e-8).unsqueeze(0).to(device),
                                     torch.tensor(y_true_prob + 1e-8).unsqueeze(0).to(device),
                                     torch.ones_like(torch.tensor(y_pred_prob).unsqueeze(0), dtype=torch.bool).to(
                                         device),
                                     threshold=1e-8).mean().item()
 
-                print(f"[Eval SID Debug] y_pred combined min: {np.min(y_pred)}, max: {np.max(y_pred)}, has_zero: {(y_pred == 0).any()}")
-                print(f"[Eval SID Debug] y_true combined min: {np.min(y_true)}, max: {np.max(y_true)}, has_zero: {(y_true == 0).any()}")
+                #print(f"[Eval SID Debug] y_pred combined min: {np.min(y_pred)}, max: {np.max(y_pred)}, has_zero: {(y_pred == 0).any()}")
+                #print(f"[Eval SID Debug] y_true combined min: {np.min(y_true)}, max: {np.max(y_true)}, has_zero: {(y_true == 0).any()}")
                 sid_combined = sid_loss(torch.tensor(y_pred + 1e-8).unsqueeze(0).to(device),
                                         torch.tensor(y_true + 1e-8).unsqueeze(0).to(device),
                                         torch.ones_like(torch.tensor(y_pred).unsqueeze(0), dtype=torch.bool).to(

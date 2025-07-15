@@ -71,7 +71,7 @@ class EMA(pl.Callback):
         For example, in pl_module has metrics, you don't want to return their parameters.
 
         code:
-            # Only consider modules that can be seen by optimizers. Lightning modules can have others nn.Module attached
+            # Only consider modules_ir_attention that can be seen by optimizers. Lightning modules_ir_attention can have others nn.Module attached
             # like losses, metrics, etc.
             patterns_to_ignore = ("metrics1", "metrics2")
             return dict(filter(lambda i: i[0].startswith(patterns), pl_module.state_dict().items()))
