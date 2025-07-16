@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_QMData_2.py", line 483, in <module>
+    run_pipeline(args)
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_QMData_2.py", line 446, in run_pipeline
+    ds = SMILESDataset(
+         ^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_QMData_2.py", line 97, in __init__
+    all_edge_feats = torch.cat([
+                               ^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_QMData_2.py", line 98, in <listcomp>
+    torch.tensor(g["edge_feat"], dtype=torch.long)
+TypeError: 'dict' object cannot be interpreted as an integer
