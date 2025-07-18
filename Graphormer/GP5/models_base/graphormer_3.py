@@ -137,6 +137,7 @@ class GraphormerModel(nn.Module):
 
 # Example Usage
 if __name__ == "__main__":
+    print()
     # Example configuration dictionary
     config = {
         "num_atoms": 100,

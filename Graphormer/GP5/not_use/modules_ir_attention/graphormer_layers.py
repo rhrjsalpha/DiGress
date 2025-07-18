@@ -35,6 +35,13 @@ class GraphNodeFeature(nn.Module):
             nn.Linear(hidden_dim, hidden_dim)
         )
 
+        self.feature_encoders = nn.ModuleDict()
+        for feature_name, in_dim in feature_dims['x'].items():
+            if feature_name == 'atomic_num': # 정수 인덱스 특성 (e.g., atomic_num)은 Embedding 사용
+                self.feature_encoders[feature_name] = nn.Embedding(in_dim, hidden_dim, padding_idx=0)
+            else: # 나머지 (원-핫, 실수) 특성은 Linear 사용
+                self.feature_encoders[feature_name] = nn.Linear(in_dim, hidden_dim)
+
         self.graph_token = nn.Embedding(1, hidden_dim)
         self.apply(lambda module: init_params(module, n_layers=n_layers))
 

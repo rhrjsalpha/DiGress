@@ -12,7 +12,7 @@ from functools import partial
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
 sys.path.insert(0, project_root)
 
-from Graphormer.GP5.data_prepare.Smiles_to_Graph_backup import smiles2graph as smiles2graph_customized
+from Graphormer.GP5.data_prepare.Smiles_to_Graph import smiles2graph_customized
 
 # ==============================================================================
 #  1. Predefined Vocabulary for Nominal Features

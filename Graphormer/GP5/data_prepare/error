@@ -1,0 +1,41 @@
+        for key in original_node_feat_dict:
+            feat = original_node_feat_dict[key]
+            #print(key, feat)
+            print(key, feat.shape)
+            pad_row = np.zeros((1, feat.shape[1]), dtype=np.float32)
+            original_node_feat_dict[key] = np.concatenate([feat, pad_row], axis=0)
+        new_graph['x'] = original_node_feat_dict
+
+
+atomic_num (26, 118)
+formal_charge (26, 11)
+hybridization (26, 8)
+is_aromatic (26, 2)
+total_num_hs (26, 9)
+explicit_valence (26, 8)
+total_bonds (26, 8)
+partial_charge (26,)
+Traceback (most recent call last):
+  File "C:\Users\analcheminfo\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_QMData_2.py", line 754, in <module>
+    run_pipeline(args)
+  File "C:\Users\analcheminfo\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_QMData_2.py", line 734, in run_pipeline
+    for i, batch in enumerate(dl):
+  File "C:\Users\analcheminfo\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\utils\data\dataloader.py", line 733, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\analcheminfo\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\utils\data\dataloader.py", line 789, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\analcheminfo\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\analcheminfo\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+            ~~~~~~~~~~~~^^^^^
+  File "C:\Users\analcheminfo\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_QMData_2.py", line 406, in __getitem__
+    g_modified_raw = self._add_global_node_raw(raw_g)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\analcheminfo\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\Dataloader_QMData_2.py", line 289, in _add_global_node_raw
+    pad_row = np.zeros((1, feat.shape[1]), dtype=np.float32)
+                           ~~~~~~~~~~^^^
+IndexError: tuple index out of range

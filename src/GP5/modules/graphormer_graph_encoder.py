@@ -1,7 +1,6 @@
-import torch
 import torch.nn as nn
-from Graphormer.GP5.modules_ir_attention.graphormer_graph_encoder_layer import GraphormerGraphEncoderLayer
-from Graphormer.GP5.modules_ir_attention.graphormer_layers import GraphNodeFeature, GraphAttnBias
+from Graphormer.GP5.not_use.modules_ir_attention.graphormer_graph_encoder_layer import GraphormerGraphEncoderLayer
+from Graphormer.GP5.not_use.modules_ir_attention.graphormer_layers import GraphNodeFeature, GraphAttnBias
 
 class GraphormerGraphEncoder(nn.Module):
     def __init__(

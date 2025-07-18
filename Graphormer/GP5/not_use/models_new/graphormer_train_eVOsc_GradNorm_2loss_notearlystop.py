@@ -106,7 +106,7 @@ def train_model_ex_porb(
     # 손실 값 저장을 위한 리스트 초기화
     best_loss_ex = float('inf')
     best_loss_prob = float('inf')
-    best_model_path = "./best_model.pth"
+    best_model_path = "best_model.pth"
     best_epoch = 0
     patience = patience  # Early stopping patience 설정
 
@@ -250,7 +250,7 @@ def train_model_ex_porb(
               f"Weights: {weight_true}, Time: {epoch_time:.2f},no_improve_count: {ex_no_improve_count, prob_no_improve_count}")
 
         if epoch == num_epochs - 1:
-            torch.save(model.state_dict(), "./best_model.pth")
+            torch.save(model.state_dict(), "best_model.pth")
 
     if epoch == num_epochs - 1:
         best_epoch = num_epochs
@@ -513,7 +513,7 @@ if __name__ == "__main__":
             final_loss = train_model_ex_porb(
                 config=config,
                 target_type=target_type,
-                dataset_path="../../graphormer_data/train_50.csv",
+                dataset_path="../../../graphormer_data/train_50.csv",
                 loss_function_ex=loss_ex,
                 loss_function_prob=loss_prob,
                 learning_rate=0.001,

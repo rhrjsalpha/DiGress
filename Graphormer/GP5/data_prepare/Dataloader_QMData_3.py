@@ -104,15 +104,12 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
                 elif key == 'explicit_valence': prop = atom.GetExplicitValence()
                 elif key == 'total_bonds':
                     prop = atom.GetTotalDegree()
-                    #print(atom.GetAtomicNum())
-                    #print("atom.GetTotalDegree()",atom.GetTotalDegree())
-                    #print("atom.GetDegree()", atom.GetDegree())
                 node_features[key].append(_one_hot_encode(prop, vocab_or_type))
             elif vocab_or_type is float:
                 if key == 'atomic_mass': node_features[key].append(atom.GetMass())
                 elif key == 'partial_charge':
                     try:
-                        charge = float(atom.GetProp('_GastigerCharge'))
+                        charge = float(atom.GetProp('_GasteigerCharge'))
                         node_features[key].append(charge)
                     except(KeyError, ValueError):
                         node_features[key].append(0.0)
@@ -122,7 +119,6 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
         else:
             node_features[key] = np.array(node_features[key], dtype=np.float32)
 
-    # Initialize attn_edge_type as a dictionary of numpy arrays
     attn_edge_type = {key: np.zeros((num_nodes, num_nodes, len(vocab)), dtype=np.float32) for key, vocab in BOND_FEATURES_VOCAB.items()}
     edge_indices = []
 
@@ -143,7 +139,6 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
 
     spatial_pos = _compute_shortest_paths(adj)
     
-    # Initialize edge_input as a dictionary of numpy arrays
     edge_input = {key: np.zeros((num_nodes, num_nodes, multi_hop_max_dist, len(vocab)), dtype=np.float32) for key, vocab in BOND_FEATURES_VOCAB.items()}
     for i in range(num_nodes):
         for j in range(num_nodes):
@@ -453,10 +448,7 @@ class SMILESDataset(Dataset):
             sorted_idx = np.argsort(-prob, axis=1)
             top_idx = sorted_idx[:, :n_pairs]
             ex_top = np.take_along_axis(ex, top_idx, axis=1)
-            prob_top = np.take_along_axis(prob, top_idx, axis=1)
-            asc_idx = np.argsort(ex_top, axis=1)
-            ex_top = np.take_along_axis(ex_top, asc_idx, axis=1)
-            prob_top = np.take_along_axis(prob_top, asc_idx, axis=1)
+            prob_top = np.take_along_axis(prob, asc_idx, axis=1)
             stacked = np.stack((ex_top, prob_top), axis=-1)
             return torch.tensor(stacked, dtype=torch.float32)
 
@@ -595,7 +587,7 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
     else:
         graphs = [b[0] for b in batch]
         tgt_idx = [b[2] for b in batch]
-        global_feat_dicts = [b[3] for b in batch]
+        global_feat_dicts = [b[3] for b in graphs]
 
     max_nodes = max(g['num_nodes'] for g in graphs) if graphs else 0
 
@@ -606,8 +598,12 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
             pad_len = max_nodes - tensor.size(0)
             padded_tensor = torch.nn.functional.pad(tensor, (0, 0, 0, pad_len), 'constant', 0)
             collated_x[key].append(padded_tensor)
+    # --- 변경 시작: x 딕셔너리를 단일 텐서로 통합 --- #
+    feature_tensors_x = []
     for key in collated_x:
-        collated_x[key] = torch.stack(collated_x[key])
+        feature_tensors_x.append(torch.stack(collated_x[key]))
+    collated_x_tensor = torch.cat(feature_tensors_x, dim=-1)
+    # --- 변경 끝 --- #
 
     # Collate global features
     collated_globals = {}
@@ -615,7 +611,7 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
         for key in global_feat_dicts[0].keys():
             collated_globals[key] = torch.stack([d[key] for d in global_feat_dicts])
 
-    # Collate other graph tensors (adj, spatial_pos, attn_edge_type, edge_input)
+    # Collate other graph tensors (adj, spatial_pos, attn_bias, attn_edge_type, edge_input)
     adj_list, spatial_pos_list, attn_bias_list = [], [], []
     collated_attn_edge_type = {key: [] for key in graphs[0]['attn_edge_type'].keys()}
     collated_edge_input = {key: [] for key in graphs[0]['edge_input'].keys()}
@@ -626,38 +622,38 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
         spatial_pos_list.append(torch.nn.functional.pad(g['spatial_pos'], (0, pad_len, 0, pad_len), value=510))
         attn_bias_list.append(torch.nn.functional.pad(g['attn_bias'], (0, pad_len, 0, pad_len)))
 
-        #for key, tensor in g['attn_edge_type'].items():
-        #    padded_tensor = torch.nn.functional.pad(tensor, (0, pad_len, 0, pad_len, 0, 0), 'constant', 0)
-        #    collated_attn_edge_type[key].append(padded_tensor)
-        for key, t in g['edge_input'].items():
-            max_dist = t.shape[2]
-            D = t.shape[-1]
-            pad_t = torch.zeros((max_nodes, max_nodes, max_dist, D), dtype=t.dtype)
-            pad_t[:g['num_nodes'], :g['num_nodes'], :, :] = t
-            collated_edge_input[key].append(pad_t)
-
-        #for key, tensor in g['edge_input'].items():
-        #    padded_tensor = torch.nn.functional.pad(tensor, (0, pad_len, 0, pad_len, 0, 0, 0, 0), 'constant', 0)
-        #    collated_edge_input[key].append(padded_tensor)
+        # --- 변경 시작: attn_edge_type 딕셔너리를 단일 텐서로 통합 --- #
         for key, t in g['attn_edge_type'].items():
             D = t.shape[-1]
             pad_t = torch.zeros((max_nodes, max_nodes, D), dtype=t.dtype)
             pad_t[:g['num_nodes'], :g['num_nodes'], :] = t
             collated_attn_edge_type[key].append(pad_t)
-
+    feature_tensors_attn_edge_type = []
     for key in collated_attn_edge_type:
-        print("key",key)
-        collated_attn_edge_type[key] = torch.stack(collated_attn_edge_type[key])
+        feature_tensors_attn_edge_type.append(torch.stack(collated_attn_edge_type[key]))
+    collated_attn_edge_type_tensor = torch.cat(feature_tensors_attn_edge_type, dim=-1)
+    # --- 변경 끝 --- #
+
+    # --- 변경 시작: edge_input 딕셔너리를 단일 텐서로 통합 --- #
+    for key, t in g['edge_input'].items():
+        max_dist = t.shape[2]
+        D = t.shape[-1]
+        pad_t = torch.zeros((max_nodes, max_nodes, max_dist, D), dtype=t.dtype)
+        pad_t[:g['num_nodes'], :g['num_nodes'], :, :] = t
+        collated_edge_input[key].append(pad_t)
+    feature_tensors_edge_input = []
     for key in collated_edge_input:
-        collated_edge_input[key] = torch.stack(collated_edge_input[key])
+        feature_tensors_edge_input.append(torch.stack(collated_edge_input[key]))
+    collated_edge_input_tensor = torch.cat(feature_tensors_edge_input, dim=-1)
+    # --- 변경 끝 --- #
 
     res = {
-        "x": collated_x,
+        "x": collated_x_tensor,
         "adj": torch.stack(adj_list),
         "spatial_pos": torch.stack(spatial_pos_list),
         "attn_bias": torch.stack(attn_bias_list),
-        "attn_edge_type": collated_attn_edge_type,
-        "edge_input": collated_edge_input,
+        "attn_edge_type": collated_attn_edge_type_tensor,
+        "edge_input": collated_edge_input_tensor,
     }
 
     # Target processing
@@ -738,6 +734,17 @@ def run_pipeline(args):
 
         for i, batch in enumerate(dl):
             show_batch_shapes(batch, f"Batch {i+1}")
+            # --- 변경 시작: 최종 텐서 shape 출력 --- #
+            print("\n--- Final Collated Tensor Shapes (from collate_fn) ---")
+            for k, v in batch.items():
+                if torch.is_tensor(v):
+                    print(f"  {k:16s}: {tuple(v.shape)}")
+                elif isinstance(v, dict):
+                    print(f"  {k:16s}: (dict of tensors)")
+                    for sub_k, sub_v in v.items():
+                        if torch.is_tensor(sub_v):
+                            print(f"    {sub_k:14s}: {tuple(sub_v.shape)}")
+            # --- 변경 끝 --- #
             break
 
 def show_feature_info(csv_path):

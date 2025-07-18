@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from Graphormer.GP5.modules_ir_attention.graphormer_graph_encoder import GraphormerGraphEncoder
+from Graphormer.GP5.not_use.modules_ir_attention.graphormer_graph_encoder import GraphormerGraphEncoder
 
 
 def init_graphormer_params(module):
@@ -54,7 +54,12 @@ class GraphormerModel(nn.Module):
             pre_layernorm=config.get("pre_layernorm", False),
             q_noise=config.get("q_noise", 0.0),
             qn_block_size=config.get("qn_block_size", 8),
+            global_feature_dim=config.get("global_feature_dim", 0), # Pass global_feature_dim
         )
+
+        # --- MODIFICATION START ---
+        # Removed global_feature_projection as it's now handled within GraphNodeFeature
+        # --- MODIFICATION END ---
 
         if config.get("out_of_training", False):
             # out_of_training=True인 경우 output_size를 명시적으로 요구
@@ -64,7 +69,10 @@ class GraphormerModel(nn.Module):
             self.output_layer = nn.Linear(self.embedding_dim, self.output_size)
         else:
             self.output_size = None
-            self.output_layer = None
+            # --- MODIFICATION START ---
+            # Output layer will now take embedding_dim (from CLS token) # 그래프 임베딩과 전역 특성 임베딩을 연결한 후의 차원을 고려하여 출력 레이어 초기화
+            self.output_layer = None # Will be initialized dynamically based on combined embedding
+            # --- MODIFICATION END ---
 
         self.apply(init_graphormer_params)
 
@@ -88,9 +96,17 @@ class GraphormerModel(nn.Module):
         # Pass through the encoder
         node_embeddings, _ = self.encoder(batched_data)
 
+        # --- MODIFICATION START ---
+        # Removed global feature processing and concatenation as it's now handled within GraphormerGraphEncoder
+        # --- MODIFICATION END ---
+
         #print("target type", target_type, self.target_type)
         # Dynamically initialize the output layer
         if self.output_layer is None:
+            # --- MODIFICATION START ---
+            # Output size for the linear layer should be based on the CLS token embedding dimension # 결합된 임베딩 차원을 기반으로 출력 레이어의 입력 차원 설정
+            combined_embedding_dim = node_embeddings.size(-1)
+            # --- MODIFICATION END ---
             if targets is not None:
                 # Infer output size dynamically based on target shape
                 if target_type == "default":
@@ -113,10 +129,14 @@ class GraphormerModel(nn.Module):
                 #print("Fallback output_size (default):", output_size)
             print("output_size.shape",output_size)
             # Initialize the output layer with dynamically determined output size
-            self.output_layer = nn.Linear(self.embedding_dim, output_size).to(node_embeddings.device)
+            # --- MODIFICATION START ---
+            self.output_layer = nn.Linear(combined_embedding_dim, output_size).to(node_embeddings.device)
+            # --- MODIFICATION END ---
 
         # Apply the output layer
-        output = self.output_layer(node_embeddings)
+        # --- MODIFICATION START ---
+        output = self.output_layer(node_embeddings) # 결합된 임베딩을 출력 레이어에 전달
+        # --- MODIFICATION END ---
         # Clamp to positive using ReLU or Softplus
         output = nn.functional.softplus(output)
         #print("Output shape before adjustment:", output.shape)
@@ -157,6 +177,7 @@ if __name__ == "__main__":
         "pre_layernorm": False,
         "q_noise": 0.0,
         "qn_block_size": 8,
+        "num_unique_solvents": 5, # Added for global features # 전역 특성 사용을 위해 추가된 설정
     }
 
     # Instantiate and test the model
@@ -167,6 +188,7 @@ if __name__ == "__main__":
         "out_degree": torch.randint(0, 10, (8, 16)),
         "edge_attr": torch.randint(0, 50, (8, 16, 16)),
         "spatial_pos": torch.randint(0, 20, (8, 16, 16)),
+        "global_features": torch.randn(8, 5 + 2), # Example global features (batch_size, num_solvents + 2) # 전역 특성 예시 데이터 추가
     }
     output = model(batched_data)
-    #print(output.shape)  # [batch_size, num_pairs, 2]
+    print(output.shape) # Should be [batch_size, output_size] or [batch_size, num_pairs, 2] for ex_prob

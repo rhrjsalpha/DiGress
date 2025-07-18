@@ -3,18 +3,12 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from Graphormer.GP5.data_prepare.Dataloader_QMData import SMILESDataset, collate_fn, PREDEFINED_VOCAB
-from Graphormer.GP5.models_new.graphormer_3 import GraphormerModel
-import os
-from Graphormer.GP5.Custom_Loss.custom_loss import fastdtw_loss
+from Graphormer.GP5.not_use.models_new.graphormer_3 import GraphormerModel
 from Graphormer.GP5.Custom_Loss.soft_dtw_cuda import SoftDTW
-from Graphormer.GP5.Custom_Loss.SID_loss import SIDLoss
-import json
 import numpy as np
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from Graphormer.GP5.Custom_Loss.fast_dtw import fastdtw
-import time
 from sklearn.model_selection import KFold
-from Graphormer.GP5.models_new.graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3 import train_model_ex_porb
+from Graphormer.GP5.not_use.models_new.graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3 import train_model_ex_porb
 from chemprop.train.loss_functions import sid_loss
 from Graphormer.GP5.Custom_Loss.GradNorm import GradNorm
 
@@ -324,14 +318,14 @@ def cross_validate_model(
 
             if epoch == num_epochs - 1:
                 best_loss = avg_epoch_loss
-                torch.save(model.state_dict(), "./best_model.pth")
+                torch.save(model.state_dict(), "best_model.pth")
 
         if epoch == num_epochs - 1:
             best_epoch = num_epochs
 
         cv_metrics["CV_best_epoch"].append(best_epoch)
 
-        model.load_state_dict(torch.load("./best_model.pth", ))
+        model.load_state_dict(torch.load("best_model.pth", ))
         # Validation step
         model.eval()
         print("best_loss",best_loss)
@@ -712,7 +706,7 @@ if __name__ == "__main__":
     global_feature_names = ['Solvent', 'Temperature', 'Pressure']
     from Graphormer.GP5.data_prepare.Dataloader_QMData import get_global_feature_info
     try:
-        temp_dataset_path = "../../graphormer_data/train_50_with_features.csv"
+        temp_dataset_path = "../../../graphormer_data/train_50_with_features.csv"
         global_dim, nominal_dims = get_global_feature_info(temp_dataset_path, global_feature_names)
         config["global_feature_dim"] = global_dim
     except Exception as e:
@@ -721,7 +715,7 @@ if __name__ == "__main__":
         nominal_dims = {}
     # --- MODIFICATION END ---
     for loss_fn in loss_fn_list:
-        cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../graphormer_data/train_50_with_features.csv", testset_path="../../graphormer_data/test_10_with_features.csv",
+        cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../../graphormer_data/train_50_with_features.csv", testset_path="../../../graphormer_data/test_10_with_features.csv",
                                          num_epochs=10, n_pairs=50, n_splits=5, loss_function_ex=loss_fn,
                                          loss_function_prob=loss_fn, global_feature_names=global_feature_names,
                                          )

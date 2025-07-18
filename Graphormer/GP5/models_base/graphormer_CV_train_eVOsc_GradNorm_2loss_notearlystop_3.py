@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from Graphormer.GP5.data_prepare.Dataloader_QMData import SMILESDataset, collate_fn, PREDEFINED_VOCAB
+from Graphormer.GP5.data_prepare.DataLoader_QMData_base import SMILESDataset, collate_fn, PREDEFINED_VOCAB
 from Graphormer.GP5.models_base.graphormer_3 import GraphormerModel
 import os
 from Graphormer.GP5.Custom_Loss.custom_loss import fastdtw_loss

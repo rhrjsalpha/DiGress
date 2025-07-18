@@ -325,14 +325,14 @@ def cross_validate_model(
 
             if epoch == num_epochs - 1:
                 best_loss = avg_epoch_loss
-                torch.save(model.state_dict(), "./best_model.pth")
+                torch.save(model.state_dict(), "best_model.pth")
 
         if epoch == num_epochs - 1:
             best_epoch = num_epochs
 
         cv_metrics["CV_best_epoch"].append(best_epoch)
 
-        model.load_state_dict(torch.load("./best_model.pth", ))
+        model.load_state_dict(torch.load("best_model.pth", ))
         # Validation step
         model.eval()
         print("best_loss",best_loss)
@@ -728,7 +728,7 @@ if __name__ == "__main__":
     results_list = []
     loss_fn_list = ["SID"]
     for loss_fn in loss_fn_list:
-        cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../graphormer_data/train_1000.csv", testset_path="../../graphormer_data/test_100.csv",
+        cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../../graphormer_data/train_1000.csv", testset_path="../../../graphormer_data/test_100.csv",
                                          num_epochs=100, n_pairs=50, n_splits=5, loss_function_ex=loss_fn,
                                          loss_function_prob=loss_fn)
         cv_result["loss_function"] = loss_fn

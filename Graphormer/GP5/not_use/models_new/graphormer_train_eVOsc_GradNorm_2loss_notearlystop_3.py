@@ -1,24 +1,19 @@
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from Graphormer.GP5.data_prepare.Dataloader_QMData import SMILESDataset, collate_fn
-from Graphormer.GP5.models_new.graphormer_3 import GraphormerModel
+from Graphormer.GP5.not_use.models_new.graphormer_3 import GraphormerModel
 import os
-from Graphormer.GP5.Custom_Loss.custom_loss import fastdtw_loss
 from Graphormer.GP5.Custom_Loss.soft_dtw_cuda import SoftDTW
-from Graphormer.GP5.Custom_Loss.SID_loss import SIDLoss
-import json
 import numpy as np
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from Graphormer.GP5.Custom_Loss.fast_dtw import fastdtw
 import time
 from chemprop.train.loss_functions import sid_loss
-from torch.cuda.amp import autocast, GradScaler
+from torch.cuda.amp import GradScaler
 from Graphormer.GP5.Custom_Loss.GradNorm import GradNorm
 import math
-import matplotlib.pyplot as plt
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
@@ -119,7 +114,7 @@ def train_model_ex_porb(
 
     best_loss_ex = float('inf')
     best_loss_prob = float('inf')
-    best_model_path = "./best_model.pth"
+    best_model_path = "best_model.pth"
     best_epoch = 0
     patience = patience  # Early stopping patience 설정
 
@@ -253,7 +248,7 @@ def train_model_ex_porb(
               f"Weights: {weight_true}, Time: {epoch_time:.2f},no_improve_count: {ex_no_improve_count, prob_no_improve_count}")
 
         if epoch == num_epochs - 1:
-            torch.save(model.state_dict(), "./best_model.pth")
+            torch.save(model.state_dict(), "best_model.pth")
 
     if epoch == num_epochs - 1:
         best_epoch = num_epochs
@@ -481,7 +476,7 @@ global_feature_names = ['Solvent', 'Temperature', 'Pressure']
 from Graphormer.GP5.data_prepare.Dataloader_QMData import get_global_feature_info
 try:
     # Use a dummy dataset path to get the info, as the actual dataset is loaded later
-    temp_dataset_path = "../../graphormer_data/train_50_with_features.csv"
+    temp_dataset_path = "../../../graphormer_data/train_50_with_features.csv"
     global_dim, nominal_dims = get_global_feature_info(temp_dataset_path, global_feature_names)
     print(f"Calculated Global Feature Dimension: {global_dim}")
     # print(f"Nominal Feature Dimensions: {nominal_dims}") # Optional: for debugging
@@ -527,7 +522,7 @@ if __name__ == "__main__":
             final_loss = train_model_ex_porb(
                 config=config,
                 target_type=target_type,
-                dataset_path="../../graphormer_data/train_50_with_features.csv",
+                dataset_path="../../../graphormer_data/train_50_with_features.csv",
                 loss_function_ex=loss_ex,
                 loss_function_prob=loss_prob,
                 learning_rate=0.001,

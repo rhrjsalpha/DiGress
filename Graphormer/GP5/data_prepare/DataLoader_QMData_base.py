@@ -104,15 +104,12 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
                 elif key == 'explicit_valence': prop = atom.GetExplicitValence()
                 elif key == 'total_bonds':
                     prop = atom.GetTotalDegree()
-                    #print(atom.GetAtomicNum())
-                    #print("atom.GetTotalDegree()",atom.GetTotalDegree())
-                    #print("atom.GetDegree()", atom.GetDegree())
                 node_features[key].append(_one_hot_encode(prop, vocab_or_type))
             elif vocab_or_type is float:
                 if key == 'atomic_mass': node_features[key].append(atom.GetMass())
                 elif key == 'partial_charge':
                     try:
-                        charge = float(atom.GetProp('_GastigerCharge'))
+                        charge = float(atom.GetProp('_GasteigerCharge'))
                         node_features[key].append(charge)
                     except(KeyError, ValueError):
                         node_features[key].append(0.0)
@@ -122,7 +119,6 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
         else:
             node_features[key] = np.array(node_features[key], dtype=np.float32)
 
-    # Initialize attn_edge_type as a dictionary of numpy arrays
     attn_edge_type = {key: np.zeros((num_nodes, num_nodes, len(vocab)), dtype=np.float32) for key, vocab in BOND_FEATURES_VOCAB.items()}
     edge_indices = []
 
@@ -143,7 +139,6 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
 
     spatial_pos = _compute_shortest_paths(adj)
     
-    # Initialize edge_input as a dictionary of numpy arrays
     edge_input = {key: np.zeros((num_nodes, num_nodes, multi_hop_max_dist, len(vocab)), dtype=np.float32) for key, vocab in BOND_FEATURES_VOCAB.items()}
     for i in range(num_nodes):
         for j in range(num_nodes):
@@ -241,150 +236,11 @@ class SMILESDataset(Dataset):
         # Generate raw graphs first, filtering out None values from invalid SMILES
         self.raw_graphs = [g for g in [smiles2graph_customized(s) for s in self.data["smiles"]] if g is not None]
 
-        # Get number of edge types from raw graphs before modification
-        # The following block is no longer needed as edge features are now dictionaries
-        # all_edge_feats = torch.cat([
-        #     torch.tensor(g["edge_feat"], dtype=torch.long)
-        #     for g in self.raw_graphs if g["edge_feat"] is not None
-        # ])
-        # self.num_edge_types = torch.unique(all_edge_feats).numel()
-
         # Preprocess graphs (will be modified in __getitem__ if is_global is True)
         self.graphs = [self.preprocess_graph(g) for g in self.raw_graphs]
         self.targets = self.process_targets()
 
-    def _add_global_node_raw(self, graph):
-        """
-        원본 그래프에 글로벌 노드를 추가해 Graphormer-IR 스타일 입력으로 확장한다.
-
-        Parameters
-        ----------
-        graph : dict
-            - 'num_nodes'       : int
-            - 'x'               : Dict[str, np.ndarray]   # 노드-특성별 one-hot / 수치 행렬
-            - 'edge_index'      : np.ndarray shape=(2, E)
-            - 'adj'             : np.ndarray shape=(N, N)    bool
-            - 'spatial_pos'     : np.ndarray shape=(N, N)    int
-            - 'attn_edge_type'  : Dict[str, np.ndarray]
-            - 'edge_input'      : Dict[str, np.ndarray]
-        Returns
-        -------
-        new_graph : dict
-            글로벌 노드(인덱스 = num_atoms)와
-            `is_global` 엣지 플래그가 포함된 확장 그래프
-        """
-        # ------------------------------------------------------------------
-        # 1) 그래프 shallow-copy (numpy 배열은 copy)
-        # ------------------------------------------------------------------
-        new_graph = {
-            k: v.copy() if isinstance(v, np.ndarray) else v
-            for k, v in graph.items()
-        }
-        num_atom_nodes = new_graph['num_nodes']
-        global_node_idx = num_atom_nodes  # 새 노드 인덱스
-
-        # ------------------------------------------------------------------
-        # 2) 노드 특성: 글로벌 노드용 0-벡터 한 줄 추가
-        # ------------------------------------------------------------------
-        original_node_feat_dict = new_graph['x']
-        for key in original_node_feat_dict:
-            feat = original_node_feat_dict[key]
-            #print(key, feat)
-            print(key, feat.shape)
-            pad_row = np.zeros((1, feat.shape[1]), dtype=np.float32)
-            original_node_feat_dict[key] = np.concatenate([feat, pad_row], axis=0)
-        new_graph['x'] = original_node_feat_dict
-
-        # ------------------------------------------------------------------
-        # 3) edge_index 확장: 글로벌 노드 <--> 모든 원자
-        # ------------------------------------------------------------------
-        original_edge_index = new_graph['edge_index']
-        new_edges_to_global = [[i, global_node_idx] for i in range(num_atom_nodes)]
-        new_edges_from_global = [[global_node_idx, i] for i in range(num_atom_nodes)]
-        all_edges = np.array(
-            original_edge_index.T.tolist() + new_edges_to_global + new_edges_from_global,
-            dtype=np.int64
-        ).T
-        new_graph['edge_index'] = all_edges
-
-        # ------------------------------------------------------------------
-        # 4) 인접 행렬 확장
-        # ------------------------------------------------------------------
-        original_adj = new_graph['adj']
-        new_adj = np.zeros((num_atom_nodes + 1, num_atom_nodes + 1), dtype=bool)
-        new_adj[:num_atom_nodes, :num_atom_nodes] = original_adj
-        new_adj[global_node_idx, :num_atom_nodes] = True  # G → atom
-        new_adj[:num_atom_nodes, global_node_idx] = True  # atom → G
-        new_graph['adj'] = new_adj
-
-        # ------------------------------------------------------------------
-        # 5) 최단거리(spatial_pos) 재계산
-        # ------------------------------------------------------------------
-        new_graph['spatial_pos'] = _compute_shortest_paths(new_adj)
-
-        # ------------------------------------------------------------------
-        # 6) 엣지 특성 확장: is_global 플래그 one-hot 추가
-        # ------------------------------------------------------------------
-        original_attn_edge_type = new_graph['attn_edge_type']
-        original_edge_input = new_graph['edge_input']
-
-        # 임시 vocab 확장
-        temp_vocab = BOND_FEATURES_VOCAB.copy()
-        temp_vocab['is_global'] = [0, 1]  # 0: not_global, 1: is_global
-
-        not_global_oh = _one_hot_encode(0, temp_vocab['is_global'])
-        is_global_oh = _one_hot_encode(1, temp_vocab['is_global'])
-
-        extended_attn_edge_type = {}
-        extended_edge_input = {}
-
-        for key, vocab in temp_vocab.items():
-            feat_dim = len(vocab)
-
-            # (N+1, N+1, D)
-            new_attn_arr = np.zeros(
-                (num_atom_nodes + 1, num_atom_nodes + 1, feat_dim), dtype=np.float32
-            )
-            # (N+1, N+1, multi_hop_max_dist, D)
-            new_edge_in_arr = np.zeros(
-                (
-                    num_atom_nodes + 1,
-                    num_atom_nodes + 1,
-                    self.multi_hop_max_dist,
-                    feat_dim,
-                ),
-                dtype=np.float32,
-            )
-
-            # 기존 atom-atom 엣지 복사
-            if key in original_attn_edge_type:
-                new_attn_arr[:num_atom_nodes, :num_atom_nodes, :] = original_attn_edge_type[key]
-                new_edge_in_arr[:num_atom_nodes, :num_atom_nodes, :, :] = original_edge_input[key]
-
-            # atom ↔ G
-            if key == 'is_global':
-                # atom → G
-                new_attn_arr[:num_atom_nodes, global_node_idx, :] = is_global_oh
-                new_edge_in_arr[:num_atom_nodes, global_node_idx, :, :] = is_global_oh
-                # G → atom
-                new_attn_arr[global_node_idx, :num_atom_nodes, :] = is_global_oh
-                new_edge_in_arr[global_node_idx, :num_atom_nodes, :, :] = is_global_oh
-                # G → G (self-loop)
-                new_attn_arr[global_node_idx, global_node_idx, :] = is_global_oh
-                new_edge_in_arr[global_node_idx, global_node_idx, :, :] = is_global_oh
-
-            extended_attn_edge_type[key] = new_attn_arr
-            extended_edge_input[key] = new_edge_in_arr
-
-        new_graph['attn_edge_type'] = extended_attn_edge_type
-        new_graph['edge_input'] = extended_edge_input
-
-        # ------------------------------------------------------------------
-        # 7) 노드 수 업데이트
-        # ------------------------------------------------------------------
-        new_graph['num_nodes'] = num_atom_nodes + 1
-
-        return new_graph
+    # Removed _add_global_node_raw function as it's handled by the model
 
     def __getitem__(self, idx):
         tgt = self.targets[idx]
@@ -408,9 +264,8 @@ class SMILESDataset(Dataset):
         # --- Main logic based on is_global ---
         if self.is_global:
             raw_g = self.raw_graphs[idx]
-            g_modified_raw = self._add_global_node_raw(raw_g)
-            g_processed = self.preprocess_graph(g_modified_raw)
-            # Embed the global features dictionary directly into the graph dictionary
+            # No longer adding a physical node here; model will handle it
+            g_processed = self.preprocess_graph(raw_g)
             g_processed['global_features'] = global_feat_dict
             return g_processed, tgt, idx
         else:
@@ -541,7 +396,7 @@ class SMILESDataset(Dataset):
             "adj": adj, 
             "in_degree": in_deg, 
             "out_degree": out_deg,
-            "attn_edge_type": attn_edge_type, 
+            "attn_edge_type": attn_edge_type,
             "spatial_pos": spatial_pos,
             "attn_bias": attn_bias, 
             "edge_input": edge_input,
@@ -588,14 +443,12 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
     if not batch:
         return None
 
-    if is_global:
-        graphs = [b[0] for b in batch]
-        tgt_idx = [b[2] for b in batch]
-        global_feat_dicts = [g.get('global_features', {}) for g in graphs]
-    else:
-        graphs = [b[0] for b in batch]
-        tgt_idx = [b[2] for b in batch]
-        global_feat_dicts = [b[3] for b in batch]
+    graphs = [b[0] for b in batch]
+    tgt_idx = [b[2] for b in batch]
+
+    # Always get global_features from g_processed (b[0])
+    # g_processed will contain 'global_features' whether is_global is True or False
+    global_feat_dicts = [g.get('global_features', {}) for g in graphs]
 
     max_nodes = max(g['num_nodes'] for g in graphs) if graphs else 0
 
@@ -606,8 +459,12 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
             pad_len = max_nodes - tensor.size(0)
             padded_tensor = torch.nn.functional.pad(tensor, (0, 0, 0, pad_len), 'constant', 0)
             collated_x[key].append(padded_tensor)
+    # --- 변경 시작: x 딕셔너리를 단일 텐서로 통합 ---
+    feature_tensors_x = []
     for key in collated_x:
-        collated_x[key] = torch.stack(collated_x[key])
+        feature_tensors_x.append(torch.stack(collated_x[key]))
+    collated_x_tensor = torch.cat(feature_tensors_x, dim=-1)
+    # --- 변경 끝 ---
 
     # Collate global features
     collated_globals = {}
@@ -615,7 +472,7 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
         for key in global_feat_dicts[0].keys():
             collated_globals[key] = torch.stack([d[key] for d in global_feat_dicts])
 
-    # Collate other graph tensors (adj, spatial_pos, attn_edge_type, edge_input)
+    # Collate other graph tensors (adj, spatial_pos, attn_bias, attn_edge_type, edge_input)
     adj_list, spatial_pos_list, attn_bias_list = [], [], []
     collated_attn_edge_type = {key: [] for key in graphs[0]['attn_edge_type'].keys()}
     collated_edge_input = {key: [] for key in graphs[0]['edge_input'].keys()}
@@ -626,38 +483,38 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
         spatial_pos_list.append(torch.nn.functional.pad(g['spatial_pos'], (0, pad_len, 0, pad_len), value=510))
         attn_bias_list.append(torch.nn.functional.pad(g['attn_bias'], (0, pad_len, 0, pad_len)))
 
-        #for key, tensor in g['attn_edge_type'].items():
-        #    padded_tensor = torch.nn.functional.pad(tensor, (0, pad_len, 0, pad_len, 0, 0), 'constant', 0)
-        #    collated_attn_edge_type[key].append(padded_tensor)
-        for key, t in g['edge_input'].items():
-            max_dist = t.shape[2]
-            D = t.shape[-1]
-            pad_t = torch.zeros((max_nodes, max_nodes, max_dist, D), dtype=t.dtype)
-            pad_t[:g['num_nodes'], :g['num_nodes'], :, :] = t
-            collated_edge_input[key].append(pad_t)
-
-        #for key, tensor in g['edge_input'].items():
-        #    padded_tensor = torch.nn.functional.pad(tensor, (0, pad_len, 0, pad_len, 0, 0, 0, 0), 'constant', 0)
-        #    collated_edge_input[key].append(padded_tensor)
+        # --- 변경 시작: attn_edge_type 딕셔너리를 단일 텐서로 통합 ---
         for key, t in g['attn_edge_type'].items():
             D = t.shape[-1]
             pad_t = torch.zeros((max_nodes, max_nodes, D), dtype=t.dtype)
             pad_t[:g['num_nodes'], :g['num_nodes'], :] = t
             collated_attn_edge_type[key].append(pad_t)
-
+    feature_tensors_attn_edge_type = []
     for key in collated_attn_edge_type:
-        print("key",key)
-        collated_attn_edge_type[key] = torch.stack(collated_attn_edge_type[key])
+        feature_tensors_attn_edge_type.append(torch.stack(collated_attn_edge_type[key]))
+    collated_attn_edge_type_tensor = torch.cat(feature_tensors_attn_edge_type, dim=-1)
+    # --- 변경 끝 ---
+
+    # --- 변경 시작: edge_input 딕셔너리를 단일 텐서로 통합 ---
+    for key, t in g['edge_input'].items():
+        max_dist = t.shape[2]
+        D = t.shape[-1]
+        pad_t = torch.zeros((max_nodes, max_nodes, max_dist, D), dtype=t.dtype)
+        pad_t[:g['num_nodes'], :g['num_nodes'], :, :] = t
+        collated_edge_input[key].append(pad_t)
+    feature_tensors_edge_input = []
     for key in collated_edge_input:
-        collated_edge_input[key] = torch.stack(collated_edge_input[key])
+        feature_tensors_edge_input.append(torch.stack(collated_edge_input[key]))
+    collated_edge_input_tensor = torch.cat(feature_tensors_edge_input, dim=-1)
+    # --- 변경 끝 ---
 
     res = {
-        "x": collated_x,
+        "x": collated_x_tensor,
         "adj": torch.stack(adj_list),
         "spatial_pos": torch.stack(spatial_pos_list),
         "attn_bias": torch.stack(attn_bias_list),
-        "attn_edge_type": collated_attn_edge_type,
-        "edge_input": collated_edge_input,
+        "attn_edge_type": collated_attn_edge_type_tensor,
+        "edge_input": collated_edge_input_tensor,
     }
 
     # Target processing
@@ -738,6 +595,17 @@ def run_pipeline(args):
 
         for i, batch in enumerate(dl):
             show_batch_shapes(batch, f"Batch {i+1}")
+            # --- 변경 시작: 최종 텐서 shape 출력 ---
+            print("\n--- Final Collated Tensor Shapes (from collate_fn) ---")
+            for k, v in batch.items():
+                if torch.is_tensor(v):
+                    print(f"  {k:16s}: {tuple(v.shape)}")
+                elif isinstance(v, dict):
+                    print(f"  {k:16s}: (dict of tensors)")
+                    for sub_k, sub_v in v.items():
+                        if torch.is_tensor(sub_v):
+                            print(f"    {sub_k:14s}: {tuple(sub_v.shape)}")
+            # --- 변경 끝 ---
             break
 
 def show_feature_info(csv_path):
