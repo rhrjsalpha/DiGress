@@ -25,11 +25,12 @@ class GraphormerGraphEncoder(nn.Module):
         pre_layernorm=False,
         q_noise=0.0,
         qn_block_size=8,
-        global_feature_dim=0, # Added global_feature_dim
+        global_cat_dim=0, # Changed from global_feature_dim
+        global_cont_dim=0, # Added global_cont_dim
     ):
         super().__init__()
 
-        # Node and Edge feature extraction # (self, num_heads, num_atoms, num_in_degree, num_out_degree, hidden_dim, n_layers):
+        # Node and Edge feature extraction
         self.graph_node_feature = GraphNodeFeature(
             num_heads=num_attention_heads,
             num_atoms=num_atoms,
@@ -37,7 +38,8 @@ class GraphormerGraphEncoder(nn.Module):
             num_out_degree=num_out_degree,
             hidden_dim=embedding_dim,
             n_layers=num_encoder_layers,
-            global_feature_dim=global_feature_dim, # Pass global_feature_dim,
+            global_cat_dim=global_cat_dim, # Pass global_cat_dim
+            global_cont_dim=global_cont_dim, # Pass global_cont_dim
         )
 
         #print("GraphormerGraphEncoder num_spatial",num_spatial)

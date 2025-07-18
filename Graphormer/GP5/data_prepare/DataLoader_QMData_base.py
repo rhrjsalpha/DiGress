@@ -53,12 +53,10 @@ BOND_FEATURES_VOCAB = {
     'is_in_ring': [0, 1],
 }
 
-def _one_hot_encode(value, vocab):
-    if value not in vocab:
-        value = vocab[0]
-    vec = np.zeros(len(vocab), dtype=np.float32)
-    vec[vocab.index(value)] = 1.0
-    return vec
+def _get_feature_index(value, vocab):
+    if value in vocab:
+        return vocab.index(value)
+    return vocab.index(vocab[0]) # Default to the first element if not found
 
 def _compute_shortest_paths(adj):
     num_nodes = adj.shape[0]
@@ -76,7 +74,7 @@ def _compute_shortest_paths(adj):
                 if v not in visited:
                     visited.add(v)
                     q.append((v, d + 1))
-    dist[dist == -1] = 510
+    dist[dist == -1] = -1
     return dist
 
 def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
@@ -84,15 +82,23 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
     if mol is None:
         return None
 
+    # 혹시 혼합물 있을 경우 배제
+    if len(Chem.GetMolFrags(mol)) > 1:
+        return None
+
     try:
         AllChem.ComputeGasteigerCharges(mol)
     except:
+        print("partial charge calculation failed")
         pass
 
     num_nodes = mol.GetNumAtoms()
     adj = np.zeros((num_nodes, num_nodes), dtype=bool)
 
-    node_features = {key: [] for key in ATOM_FEATURES_VOCAB}
+    node_features_cat = {key: [] for key in ATOM_FEATURES_VOCAB if isinstance(ATOM_FEATURES_VOCAB[key], list)}
+    node_features_cont = {key: [] for key in float_feature_keys}
+
+
     for atom in mol.GetAtoms():
         for key, vocab_or_type in ATOM_FEATURES_VOCAB.items():
             if isinstance(vocab_or_type, list):
@@ -104,51 +110,72 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
                 elif key == 'explicit_valence': prop = atom.GetExplicitValence()
                 elif key == 'total_bonds':
                     prop = atom.GetTotalDegree()
-                node_features[key].append(_one_hot_encode(prop, vocab_or_type))
+                node_features_cat[key].append(_get_feature_index(prop, vocab_or_type))
             elif vocab_or_type is float:
-                if key == 'atomic_mass': node_features[key].append(atom.GetMass())
+                if key == 'atomic_mass': node_features_cont[key].append(atom.GetMass())
                 elif key == 'partial_charge':
                     try:
                         charge = float(atom.GetProp('_GasteigerCharge'))
-                        node_features[key].append(charge)
+                        node_features_cont[key].append(charge)
                     except(KeyError, ValueError):
-                        node_features[key].append(0.0)
-    for key in node_features:
-        if key in float_feature_keys:
-            node_features[key] = np.array(node_features[key], dtype=np.float32).reshape(-1, 1)
-        else:
-            node_features[key] = np.array(node_features[key], dtype=np.float32)
+                        node_features_cont[key].append(0.0)
 
-    attn_edge_type = {key: np.zeros((num_nodes, num_nodes, len(vocab)), dtype=np.float32) for key, vocab in BOND_FEATURES_VOCAB.items()}
+    # Combine categorical features into a single integer array
+    x_cat = np.stack(list(node_features_cat.values()), axis=-1)
+
+    # Combine continuous features into a single float array
+    x_cont = np.stack(list(node_features_cont.values()), axis=-1)
+
+    attn_edge_type = {
+        k: np.zeros((num_nodes, num_nodes, len(vocab)), dtype=np.int64)  # (N,N,D)
+        for k, vocab in BOND_FEATURES_VOCAB.items()
+    }
     edge_indices = []
 
     for bond in mol.GetBonds():
         i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
         adj[i, j] = adj[j, i] = True
         edge_indices.extend([[i, j], [j, i]])
-        
+
         for key, vocab in BOND_FEATURES_VOCAB.items():
             if key == 'bond_type':     prop = bond.GetBondType()
             elif key == 'stereo':        prop = bond.GetStereo()
             elif key == 'is_conjugated': prop = int(bond.GetIsConjugated())
             elif key == 'is_in_ring':    prop = int(bond.IsInRing())
-            
-            one_hot_vec = _one_hot_encode(prop, vocab)
-            attn_edge_type[key][i, j, :] = one_hot_vec
-            attn_edge_type[key][j, i, :] = one_hot_vec
+
+            idx = _get_feature_index(prop, vocab)
+            attn_edge_type[key][i, j] = 1
+            attn_edge_type[key][j, i] = 1
 
     spatial_pos = _compute_shortest_paths(adj)
-    
-    edge_input = {key: np.zeros((num_nodes, num_nodes, multi_hop_max_dist, len(vocab)), dtype=np.float32) for key, vocab in BOND_FEATURES_VOCAB.items()}
+    #print("spatial_pos",spatial_pos)
+
+    # np.inf 값이 포함된 분자(연결되지 않은 구성 요소를 가진 분자)는 제거
+    #if np.isinf(spatial_pos).any():
+    #    return None
+
+    edge_input = {
+        key: np.zeros(
+            (num_nodes, num_nodes, multi_hop_max_dist, len(vocab)),  # ← 4-D 로!
+            dtype=np.int64
+        )
+        for key, vocab in BOND_FEATURES_VOCAB.items()
+    }
+    # 2) 값 복사
     for i in range(num_nodes):
         for j in range(num_nodes):
             dist = spatial_pos[i, j]
             if 1 <= dist < multi_hop_max_dist:
                 for key in BOND_FEATURES_VOCAB.keys():
+                    print(edge_input[key].shape)
+                    print(attn_edge_type[key].shape)
                     edge_input[key][i, j, dist - 1, :] = attn_edge_type[key][i, j, :]
 
+    edge_input[key][i, j, dist - 1] = attn_edge_type[key][i, j]
+
     return {
-        'x': node_features,
+        'x_cat': x_cat,
+        'x_cont': x_cont,
         'adj': adj,
         'edge_index': np.array(edge_indices).T if edge_indices else np.empty((2, 0), dtype=int),
         'attn_edge_type': attn_edge_type, # Now a dict of arrays
@@ -170,15 +197,17 @@ PREDEFINED_VOCAB = {
     ],
 }
 
-def get_global_feature_info(csv_file, global_feature_names):
+def get_global_feature_info(global_feature_names):
     nominal_feature_vocab = {k: v for k, v in PREDEFINED_VOCAB.items() if k in global_feature_names}
-    global_dim = 0
-    for name in global_feature_names:
-        if name in nominal_feature_vocab:
-            global_dim += len(nominal_feature_vocab[name])
-        else:
-            global_dim += 1
-    return global_dim, nominal_feature_vocab
+    continuous_feature_names_list = [name for name in global_feature_names if name not in nominal_feature_vocab]
+
+    global_cat_dim = 0
+    for name in nominal_feature_vocab:
+        global_cat_dim += len(nominal_feature_vocab[name])
+
+    global_cont_dim = len(continuous_feature_names_list)
+
+    return nominal_feature_vocab, continuous_feature_names_list, global_cat_dim, global_cont_dim
 
 # ==============================================================================
 #  2. Updated SMILESDataset Class
@@ -188,7 +217,9 @@ class SMILESDataset(Dataset):
         self,
         csv_file,
         nominal_feature_vocab,
-        global_feature_names,
+        continuous_feature_names,
+        global_cat_dim,
+        global_cont_dim,
         is_global: bool = False, #<-- New parameter
         max_nodes: int = 128,
         multi_hop_max_dist: int = 5,
@@ -206,7 +237,10 @@ class SMILESDataset(Dataset):
 
         self.is_global = is_global
         self.nominal_feature_vocab = nominal_feature_vocab
-        self.global_feature_names = global_feature_names or []
+        self.continuous_feature_names = continuous_feature_names
+        self.global_feature_names = list(nominal_feature_vocab.keys()) + continuous_feature_names # Reconstruct for _get_all_cols_to_load
+        self.global_cat_dim = global_cat_dim
+        self.global_cont_dim = global_cont_dim
         self.nominal_feature_info = self._build_nominal_feature_info()
 
         self._validate_columns(csv_file)
@@ -245,32 +279,35 @@ class SMILESDataset(Dataset):
     def __getitem__(self, idx):
         tgt = self.targets[idx]
 
-        # --- Process global features for the item into a dictionary ---
-        global_feat_dict = {}
-        for name in self.global_feature_names:
+        # --- Process global features ---
+        global_feat_cat_indices = []
+        for name in self.nominal_feature_vocab.keys():
             val = self.data.loc[idx, name]
-            if name in self.nominal_feature_info: # For nominal features
-                vocab_info = self.nominal_feature_info[name]
-                vec = torch.zeros(len(vocab_info['unique_values']), dtype=torch.float32)
-                if val in vocab_info['value_to_idx']:
-                    vec[vocab_info['value_to_idx'][val]] = 1.0
-                else:
-                    print(f"Warning: Value '{val}' for feature '{name}' not in predefined vocab. Treating as zeros.")
-                global_feat_dict[name] = vec
-            else: # For numerical features
-                global_feat_dict[name] = torch.tensor([float(val)], dtype=torch.float32)
+            vocab_info = self.nominal_feature_info[name]
+            if val in vocab_info['value_to_idx']:
+                global_feat_cat_indices.append(vocab_info['value_to_idx'][val])
+            else:
+                # Handle unseen nominal values by mapping to a default (e.g., 0 or a special UNK token)
+                global_feat_cat_indices.append(0) # Assuming 0 is a safe default/padding_idx
 
+        global_feat_cont_values = []
+        for name in self.continuous_feature_names:
+            val = self.data.loc[idx, name]
+            global_feat_cont_values.append(float(val))
+
+        global_feat_cat_tensor = torch.tensor(global_feat_cat_indices, dtype=torch.long)
+        global_feat_cont_tensor = torch.tensor(global_feat_cont_values, dtype=torch.float32)
 
         # --- Main logic based on is_global ---
         if self.is_global:
             raw_g = self.raw_graphs[idx]
-            # No longer adding a physical node here; model will handle it
             g_processed = self.preprocess_graph(raw_g)
-            g_processed['global_features'] = global_feat_dict
+            g_processed['global_features_cat'] = global_feat_cat_tensor
+            g_processed['global_features_cont'] = global_feat_cont_tensor
             return g_processed, tgt, idx
         else:
             g_processed = self.graphs[idx]
-            return g_processed, tgt, idx, global_feat_dict
+            return g_processed, tgt, idx, {'global_features_cat': global_feat_cat_tensor, 'global_features_cont': global_feat_cont_tensor}
 
     def __len__(self):
         return len(self.data)
@@ -347,60 +384,37 @@ class SMILESDataset(Dataset):
 
     def preprocess_graph(self, graph):
         num_nodes = graph["num_nodes"]
-        # Node features are now a dictionary, so we need to handle them differently
-        # x = torch.tensor(graph["node_feat"], dtype=torch.long) # This line is problematic
         
-        # Convert node features from dict of arrays to dict of tensors
-        x_tensor_dict = {k: torch.from_numpy(v) for k, v in graph['x'].items()}
+        x_cat = torch.from_numpy(graph['x_cat']).long()
+        x_cont = torch.from_numpy(graph['x_cont']).float()
 
         edge_index = torch.tensor(graph["edge_index"], dtype=torch.long)
-        # edge_attr = graph.get("edge_feat") # This is now a dict of arrays
         
-        # attn_edge_type is already a numpy array in smiles2graph_customized
-        # No need to convert from dict of arrays here, it's already a single numpy array
-        # We will convert it to a torch tensor later.
-
-        in_deg = torch.bincount(edge_index[1], minlength=num_nodes)
-        out_deg = torch.bincount(edge_index[0], minlength=num_nodes)
+        in_deg = torch.bincount(edge_index[1], minlength=num_nodes).long()
+        out_deg = torch.bincount(edge_index[0], minlength=num_nodes).long()
 
         adj = torch.from_numpy(graph['adj'])
 
-        # Convert attn_edge_type from dict of arrays to dict of tensors
-        attn_edge_type_tensor_dict = {k: torch.from_numpy(v) for k, v in graph['attn_edge_type'].items()}
+        attn_edge_type_tensor_dict = {k: torch.from_numpy(v).long()
+                                      for k, v in graph['attn_edge_type'].items()}
 
-        spatial_pos = torch.from_numpy(graph['spatial_pos'])
-        
-        # attn_bias calculation needs to be re-evaluated with dict-based edge features
-        # For now, let's simplify or remove if not directly used by Graphormer-IR
+        spatial_pos = torch.from_numpy(graph['spatial_pos']).float()
+
         attn_bias = torch.zeros((num_nodes, num_nodes), dtype=torch.float) # Placeholder
 
-        # Convert edge_input from dict of arrays to dict of tensors
-        edge_input_tensor_dict = {k: torch.from_numpy(v) for k, v in graph['edge_input'].items()}
+        edge_input_tensor_dict = {k: torch.from_numpy(v).long() for k, v in graph['edge_input'].items()}
 
         return {
-            "x": x_tensor_dict, 
-            "adj": adj, 
-            "in_degree": in_deg, 
+            "x_cat": x_cat,
+            "x_cont": x_cont,
+            "adj": adj,
+            "in_degree": in_deg,
             "out_degree": out_deg,
-            "attn_edge_type": attn_edge_type_tensor_dict, 
+            "attn_edge_type": attn_edge_type_tensor_dict,
             "spatial_pos": spatial_pos,
-            "attn_bias": attn_bias, 
+            "attn_bias": attn_bias,
             "edge_input": edge_input_tensor_dict,
-            "num_nodes": num_nodes # Pass num_nodes for collate_fn
-        }
-
-        edge_input = torch.from_numpy(graph['edge_input'])
-
-        return {
-            "x": x_tensor_dict, 
-            "adj": adj, 
-            "in_degree": in_deg, 
-            "out_degree": out_deg,
-            "attn_edge_type": attn_edge_type,
-            "spatial_pos": spatial_pos,
-            "attn_bias": attn_bias, 
-            "edge_input": edge_input,
-            "num_nodes": num_nodes # Pass num_nodes for collate_fn
+            "num_nodes": num_nodes
         }
 
     # The following methods are no longer needed in SMILESDataset as they are in smiles2graph_customized
@@ -448,32 +462,21 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
 
     # Always get global_features from g_processed (b[0])
     # g_processed will contain 'global_features' whether is_global is True or False
-    global_feat_dicts = [g.get('global_features', {}) for g in graphs]
+    global_feat_cat_list = [g.get('global_features_cat', torch.empty(0, dtype=torch.long)) for g in graphs]
+    global_feat_cont_list = [g.get('global_features_cont', torch.empty(0, dtype=torch.float32)) for g in graphs]
 
     max_nodes = max(g['num_nodes'] for g in graphs) if graphs else 0
 
-    # Collate node features (x is now a dict of tensors)
-    collated_x = {key: [] for key in graphs[0]['x'].keys()}
-    for g in graphs:
-        for key, tensor in g['x'].items():
-            pad_len = max_nodes - tensor.size(0)
-            padded_tensor = torch.nn.functional.pad(tensor, (0, 0, 0, pad_len), 'constant', 0)
-            collated_x[key].append(padded_tensor)
-    # --- 변경 시작: x 딕셔너리를 단일 텐서로 통합 ---
-    feature_tensors_x = []
-    for key in collated_x:
-        feature_tensors_x.append(torch.stack(collated_x[key]))
-    collated_x_tensor = torch.cat(feature_tensors_x, dim=-1)
-    # --- 변경 끝 ---
+    # Collate node features
+    collated_x_cat = torch.stack([torch.nn.functional.pad(g['x_cat'], (0, 0, 0, max_nodes - g['num_nodes']), 'constant', 0) for g in graphs])
+    collated_x_cont = torch.stack([torch.nn.functional.pad(g['x_cont'], (0, 0, 0, max_nodes - g['num_nodes']), 'constant', 0) for g in graphs])
 
     # Collate global features
-    collated_globals = {}
-    if global_feat_dicts and global_feat_dicts[0]:
-        for key in global_feat_dicts[0].keys():
-            collated_globals[key] = torch.stack([d[key] for d in global_feat_dicts])
+    collated_global_features_cat = torch.stack(global_feat_cat_list) if global_feat_cat_list and global_feat_cat_list[0].numel() > 0 else torch.empty(0)
+    collated_global_features_cont = torch.stack(global_feat_cont_list) if global_feat_cont_list and global_feat_cont_list[0].numel() > 0 else torch.empty(0)
 
     # Collate other graph tensors (adj, spatial_pos, attn_bias, attn_edge_type, edge_input)
-    adj_list, spatial_pos_list, attn_bias_list = [], [], []
+    adj_list, spatial_pos_list, attn_bias_list, in_degree_list, out_degree_list = [], [], [], [], []
     collated_attn_edge_type = {key: [] for key in graphs[0]['attn_edge_type'].keys()}
     collated_edge_input = {key: [] for key in graphs[0]['edge_input'].keys()}
 
@@ -482,12 +485,14 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
         adj_list.append(torch.nn.functional.pad(g['adj'], (0, pad_len, 0, pad_len)))
         spatial_pos_list.append(torch.nn.functional.pad(g['spatial_pos'], (0, pad_len, 0, pad_len), value=510))
         attn_bias_list.append(torch.nn.functional.pad(g['attn_bias'], (0, pad_len, 0, pad_len)))
+        in_degree_list.append(torch.nn.functional.pad(g['in_degree'], (0, pad_len)))
+        out_degree_list.append(torch.nn.functional.pad(g['out_degree'], (0, pad_len)))
 
         # --- 변경 시작: attn_edge_type 딕셔너리를 단일 텐서로 통합 ---
         for key, t in g['attn_edge_type'].items():
-            D = t.shape[-1]
-            pad_t = torch.zeros((max_nodes, max_nodes, D), dtype=t.dtype)
-            pad_t[:g['num_nodes'], :g['num_nodes'], :] = t
+            D = len(BOND_FEATURES_VOCAB[key])
+            pad_t = torch.zeros((max_nodes, max_nodes, D), dtype=torch.long)
+            pad_t[:g['num_nodes'], :g['num_nodes'], :] = t   # t 는 이미 (N,N,D)
             collated_attn_edge_type[key].append(pad_t)
     feature_tensors_attn_edge_type = []
     for key in collated_attn_edge_type:
@@ -509,8 +514,11 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
     # --- 변경 끝 ---
 
     res = {
-        "x": collated_x_tensor,
+        "x_cat": collated_x_cat,
+        "x_cont": collated_x_cont,
         "adj": torch.stack(adj_list),
+        "in_degree": torch.stack(in_degree_list),
+        "out_degree": torch.stack(out_degree_list),
         "spatial_pos": torch.stack(spatial_pos_list),
         "attn_bias": torch.stack(attn_bias_list),
         "attn_edge_type": collated_attn_edge_type_tensor,
@@ -521,8 +529,10 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
     targets = torch.stack([ds.targets[i] for i in tgt_idx])
     res['targets'] = targets
 
-    if collated_globals:
-        res["global_features"] = collated_globals
+    if collated_global_features_cat.numel() > 0:
+        res["global_features_cat"] = collated_global_features_cat
+    if collated_global_features_cont.numel() > 0:
+        res["global_features_cont"] = collated_global_features_cont
 
     return res
 
@@ -531,8 +541,8 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
 # ==============================================================================
 DEFAULTS = dict(
     mode          = "both",
-    train_file    = r"C:\Users\analcheminfo\PycharmProjects\DiGress\Graphormer\graphormer_data\train_50_with_features.csv",
-    test_file     = r"C:\Users\analcheminfo\PycharmProjects\DiGress\Graphormer\graphormer_data\test_10_with_features.csv",
+    train_file    = r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\graphormer_data\train_50_with_features.csv",
+    test_file     = r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\graphormer_data\test_10_with_features.csv",
     is_global     = True, #<-- New default
     target_type   = "nm_distribution",
     batch_size    = 4,
@@ -569,7 +579,7 @@ def build_parser():
 
 def run_pipeline(args):
     GLOBAL_FEATURE_NAMES = ['Solvent', 'Temperature', 'Pressure']
-    vocab = {k: v for k, v in PREDEFINED_VOCAB.items() if k in GLOBAL_FEATURE_NAMES}
+    nominal_feature_vocab, continuous_feature_names, global_cat_dim, global_cont_dim = get_global_feature_info(GLOBAL_FEATURE_NAMES)
 
     splits = [("train", args.train_file)] if args.mode in ("train","both") else []
     if args.mode in ("test","both"):
@@ -579,8 +589,10 @@ def run_pipeline(args):
         print(f"\n===== {split.upper()} | {csv} | is_global={args.is_global} ======")
         ds = SMILESDataset(
             csv_file=csv,
-            nominal_feature_vocab=vocab,
-            global_feature_names=GLOBAL_FEATURE_NAMES,
+            nominal_feature_vocab=nominal_feature_vocab,
+            continuous_feature_names=continuous_feature_names,
+            global_cat_dim=global_cat_dim,
+            global_cont_dim=global_cont_dim,
             is_global=args.is_global,
             target_type=args.target_type,
             ex_normalize=args.ex_norm,
@@ -600,6 +612,7 @@ def run_pipeline(args):
             for k, v in batch.items():
                 if torch.is_tensor(v):
                     print(f"  {k:16s}: {tuple(v.shape)}")
+                    print(f"  {k:16s}: {v.dtype}")
                 elif isinstance(v, dict):
                     print(f"  {k:16s}: (dict of tensors)")
                     for sub_k, sub_v in v.items():
@@ -609,11 +622,14 @@ def run_pipeline(args):
             break
 
 def show_feature_info(csv_path):
-    df = pd.read_csv(csv_path)
-    names = [col for col in ['Solvent', 'Temperature', 'Pressure'] if col in df.columns]
-    dim, vocab = get_global_feature_info(csv_path, names)
+    names = [col for col in ['Solvent', 'Temperature', 'Pressure'] if col in pd.read_csv(csv_path).columns]
+    nominal_feature_vocab, continuous_feature_names, global_cat_dim, global_cont_dim = get_global_feature_info(names)
     print("\n=== Global-feature info ===")
-    print("vocab      :", vocab)
+    print("Nominal feature vocab:", nominal_feature_vocab)
+    print("Continuous feature names:", continuous_feature_names)
+    print("Global categorical dimension:", global_cat_dim)
+    print("Global continuous dimension:", global_cont_dim)
+
 
 from types import SimpleNamespace
 if __name__ == "__main__":

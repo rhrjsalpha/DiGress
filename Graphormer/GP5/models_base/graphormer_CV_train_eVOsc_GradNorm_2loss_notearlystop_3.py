@@ -77,9 +77,10 @@ def cross_validate_model(
         dict: Results containing CV metrics and full dataset metrics.
     """
     if DATASET is None:
-        dataset = SMILESDataset(csv_file=dataset_path, attn_bias_w=1.0, target_type=target_type, nominal_feature_vocab=nominal_dims, global_feature_names=global_feature_names, ex_normalize='ex_min_max', prob_normalize='prob_min_max')
+        dataset = SMILESDataset(csv_file=dataset_path, attn_bias_w=1.0, target_type=target_type, nominal_feature_vocab=nominal_dims, continuous_feature_names=continuous_feature_names, global_cat_dim=global_cat_dim, global_cont_dim=global_cont_dim, is_global=True)
     else:
         dataset = DATASET
+    print("dataset",dataset)
 
     # The global_feature_dim is already set in config before calling cross_validate_model
     # No need to re-calculate or update it here.
@@ -214,7 +215,17 @@ def cross_validate_model(
                 cpu_ram = process.memory_info().rss / 1024 ** 2  # MiB
                 print(batchcount, f"gpu_used: {gpu_used}, gpu_reserved: {gpu_reserved}, cpu_ram: {cpu_ram}")
 
-                batch_data_for_model = {k: v.to(device) for k, v in batch.items() if k != "targets"}
+                batch_data_for_model = {}
+                for k, v in batch.items():
+                    if k == "targets":
+                        continue
+                    if isinstance(v, torch.Tensor):
+                        batch_data_for_model[k] = v.to(device)
+                    elif isinstance(v, dict):
+                        # Handle nested dictionaries like global_features_cat/cont if they were dicts
+                        batch_data_for_model[k] = {sub_k: sub_v.to(device) for sub_k, sub_v in v.items()}
+                    else:
+                        batch_data_for_model[k] = v # Non-tensor items (e.g., num_nodes) remain as is
                 targets = batch["targets"].to(device)
                 outputs = model(batch_data_for_model, targets=targets, target_type=target_type)
 
@@ -356,7 +367,16 @@ def cross_validate_model(
         }
         with torch.no_grad():
             for batch in val_loader:
-                batch_data_for_model = {k: v.to(device) for k, v in batch.items() if k != "targets"}
+                batch_data_for_model = {}
+                for k, v in batch.items():
+                    if k == "targets":
+                        continue
+                    if isinstance(v, torch.Tensor):
+                        batch_data_for_model[k] = v.to(device)
+                    elif isinstance(v, dict):
+                        batch_data_for_model[k] = {sub_k: sub_v.to(device) for sub_k, sub_v in v.items()}
+                    else:
+                        batch_data_for_model[k] = v
                 targets = batch["targets"].to(device)
                 outputs = model(batch_data_for_model, targets=targets, target_type=target_type)
 
@@ -601,7 +621,16 @@ def evaluate_on_test_set(model, test_loader, device, target_type):
     SoftDTWLoss = SoftDTW(use_cuda=True, gamma=0.2, bandwidth=None, normalize=True)
     with torch.no_grad():
         for batch in test_loader:
-            batch_data_for_model = {k: v.to(device) for k, v in batch.items() if k != "targets"}
+            batch_data_for_model = {}
+            for k, v in batch.items():
+                if k == "targets":
+                    continue
+                if isinstance(v, torch.Tensor):
+                    batch_data_for_model[k] = v.to(device)
+                elif isinstance(v, dict):
+                    batch_data_for_model[k] = {sub_k: sub_v.to(device) for sub_k, sub_v in v.items()}
+                else:
+                    batch_data_for_model[k] = v
             targets = batch["targets"].to(device)
             outputs = model(batch_data_for_model, targets=targets, target_type=target_type)
 
@@ -704,21 +733,24 @@ if __name__ == "__main__":
         "q_noise": 0.0,  # Quantization noise (훈련 중 노이즈 추가를 위한 매개변수)
         "qn_block_size": 8,  # Quantization block 크기
         "output_size": 100,  # 모델 출력 크기
-        "global_feature_dim": global_dim, # Dynamically set global feature dimension
+        "global_cat_dim": 5, # Dynamically set global categorical feature dimension
+        "global_cont_dim": 5, # Dynamically set global continuous feature dimension
     }
     results_list = []
     loss_fn_list = ["SID"]
     # --- MODIFICATION START ---
     global_feature_names = ['Solvent', 'Temperature', 'Pressure']
-    from Graphormer.GP5.data_prepare.Dataloader_QMData import get_global_feature_info
+    from Graphormer.GP5.data_prepare.DataLoader_QMData_base import get_global_feature_info
     try:
-        temp_dataset_path = "../../graphormer_data/train_50_with_features.csv"
-        global_dim, nominal_dims = get_global_feature_info(temp_dataset_path, global_feature_names)
-        config["global_feature_dim"] = global_dim
+        nominal_dims, continuous_feature_names, global_cat_dim, global_cont_dim = get_global_feature_info(global_feature_names)
+        config["global_cat_dim"] = global_cat_dim
+        config["global_cont_dim"] = global_cont_dim
     except Exception as e:
         print(f"Error getting global feature info: {e}. Using fallback values.")
-        config["global_feature_dim"] = 7 # Fallback if file not found or other error
+        config["global_cat_dim"] = 1 # Fallback if file not found or other error
+        config["global_cont_dim"] = 2 # Fallback if file not found or other error
         nominal_dims = {}
+        continuous_feature_names = []
     # --- MODIFICATION END ---
     for loss_fn in loss_fn_list:
         cv_result = cross_validate_model(config=config, target_type="ex_prob", dataset_path="../../graphormer_data/train_50_with_features.csv", testset_path="../../graphormer_data/test_10_with_features.csv",

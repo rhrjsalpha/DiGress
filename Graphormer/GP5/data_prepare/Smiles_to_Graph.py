@@ -59,6 +59,9 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
+    # 혹시 혼합물 있을 경우 배제
+    if len(Chem.GetMolFrags(mol)) > 1:
+        return None
 
     num_nodes = mol.GetNumAtoms()
     adj = np.zeros((num_nodes, num_nodes), dtype=bool)

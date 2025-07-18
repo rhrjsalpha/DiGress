@@ -54,7 +54,8 @@ class GraphormerModel(nn.Module):
             pre_layernorm=config.get("pre_layernorm", False),
             q_noise=config.get("q_noise", 0.0),
             qn_block_size=config.get("qn_block_size", 8),
-            global_feature_dim=config.get("global_feature_dim", 0),
+            global_cat_dim=config.get("global_cat_dim", 0), # Changed
+            global_cont_dim=config.get("global_cont_dim", 0), # Added
         )
 
         if config.get("out_of_training", False):
@@ -164,11 +165,14 @@ if __name__ == "__main__":
     # Instantiate and test the model
     model = GraphormerModel(config)
     batched_data = {
-        "x": torch.randint(0, 100, (8, 16)),
+        "x_cat": torch.randint(0, 100, (8, 16, 7)), # Batch, Nodes, NumCatFeatures
+        "x_cont": torch.randn(8, 16, 2), # Batch, Nodes, NumContFeatures
         "in_degree": torch.randint(0, 10, (8, 16)),
         "out_degree": torch.randint(0, 10, (8, 16)),
-        "edge_attr": torch.randint(0, 50, (8, 16, 16)),
+        "attn_edge_type": torch.randint(0, 50, (8, 16, 16, 4)),
         "spatial_pos": torch.randint(0, 20, (8, 16, 16)),
+        "edge_input": torch.randn(8, 16, 16, 5, 4),
+        "attn_bias": torch.randn(8, 16, 16),
     }
     output = model(batched_data)
     #print(output.shape)  # [batch_size, num_pairs, 2]
