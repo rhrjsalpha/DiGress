@@ -16,7 +16,7 @@ from Graphormer.GP5.Custom_Loss.fast_dtw import fastdtw
 import time
 from chemprop.train.loss_functions import sid_loss
 from torch.cuda.amp import autocast, GradScaler
-from tslearn.metrics import SoftDTWLossPyTorch
+#from tslearn.metrics import SoftDTWLossPyTorch
 from Graphormer.GP5.Custom_Loss.GradNorm import GradNorm
 import math
 import matplotlib.pyplot as plt

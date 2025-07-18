@@ -16,7 +16,7 @@ import time
 from sklearn.model_selection import KFold
 from Graphormer.GP5.models.graphormer_train_eVOsc_GradNorm_2loss_notearlystop import train_model_ex_porb
 from chemprop.train.loss_functions import sid_loss
-from tslearn.metrics import SoftDTWLossPyTorch
+#from tslearn.metrics import SoftDTWLossPyTorch
 from Graphormer.GP5.Custom_Loss.GradNorm import GradNorm
 
 import math
