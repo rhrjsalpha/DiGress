@@ -21,20 +21,20 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 # ==============================================================================
 
 ATOM_FEATURES_VOCAB = {
-    'atomic_num': list(range(1, 119)),
-    'formal_charge': list(range(-5, 6)),
+    'atomic_num': list(range(1, 119)), # TODO I need to decrease the range
+    'formal_charge': list(range(-5, 6)), # increase range when diffusion / or add threshold
     'hybridization': [
         Chem.rdchem.HybridizationType.UNSPECIFIED, Chem.rdchem.HybridizationType.S,
         Chem.rdchem.HybridizationType.SP, Chem.rdchem.HybridizationType.SP2,
         Chem.rdchem.HybridizationType.SP3, Chem.rdchem.HybridizationType.SP3D,
-        Chem.rdchem.HybridizationType.SP3D2, Chem.rdchem.HybridizationType.OTHER
+        Chem.rdchem.HybridizationType.SP3D2, Chem.rdchem.HybridizationType.OTHER, # Chem.rdchem.HybridizationType.UNSPECIFIED # add this when diffusion
     ],
     'is_aromatic': [0, 1],
-    'total_num_hs': list(range(0, 9)),
-    'explicit_valence': list(range(0, 8)),
-    'total_bonds'     : list(range(0, 8)),
-    'partial_charge': float,
-    'atomic_mass': float,
+    'total_num_hs': list(range(0, 9)), # increase it when diffusion
+    'explicit_valence': list(range(0, 8)), # increase range when diffusion / or add threshold of valence encoding
+    'total_bonds'     : list(range(0, 8)), # increase range when diffusion / or add threshold
+    'partial_charge': float, # check error and change code when diffusion
+    'atomic_mass': float, # OK when diffusion
 }
 
 float_feature_keys = ['partial_charge', 'atomic_mass']
@@ -42,26 +42,26 @@ float_feature_keys = ['partial_charge', 'atomic_mass']
 BOND_FEATURES_VOCAB = {
     'bond_type': [
         Chem.rdchem.BondType.SINGLE, Chem.rdchem.BondType.DOUBLE,
-        Chem.rdchem.BondType.TRIPLE, Chem.rdchem.BondType.AROMATIC
+        Chem.rdchem.BondType.TRIPLE, Chem.rdchem.BondType.AROMATIC, # Chem.rdchem.BondType.UNSPECIFIED # add this when diffusion
     ],
     'stereo': [
         Chem.rdchem.BondStereo.STEREONONE, Chem.rdchem.BondStereo.STEREOANY,
         Chem.rdchem.BondStereo.STEREOZ, Chem.rdchem.BondStereo.STEREOE,
-        Chem.rdchem.BondStereo.STEREOCIS, Chem.rdchem.BondStereo.STEREOTRANS
+        Chem.rdchem.BondStereo.STEREOCIS, Chem.rdchem.BondStereo.STEREOTRANS, # OK when diffusion
     ],
-    'is_conjugated': [0, 1],
-    'is_in_ring': [0, 1],
+    'is_conjugated': [0, 1], # OK when diffusion
+    'is_in_ring': [0, 1], # OK when diffusion
 }
 
 def _get_feature_index(value, vocab):
     if value in vocab:
-        return vocab.index(value)
-    return vocab.index(vocab[0]) # Default to the first element if not found
+        return vocab.index(value) # 값이 존재하면 그 정확한 위치(인덱스) 를 돌려줌
+    return vocab.index(vocab[0]) # 값이 안 찾아졌을 경우 이것을 vocab 0 으로 놓는다.
 
 def _compute_shortest_paths(adj):
-    num_nodes = adj.shape[0]
-    dist = np.full((num_nodes, num_nodes), -1, dtype=int)
-    np.fill_diagonal(dist, 0)
+    num_nodes = adj.shape[0]                                        # 인접 행렬에서 Node
+    dist = np.full((num_nodes, num_nodes), -1, dtype=int)     # 거리행렬, -1로 초기화 (미방문은 -1)
+    np.fill_diagonal(dist, 0)                                   # 자기 자신 까지 거리 = 0
     for i in range(num_nodes):
         q = [(i, 0)]
         visited = {i}
@@ -78,6 +78,9 @@ def _compute_shortest_paths(adj):
     return dist
 
 def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
+    """
+    SMILES 1 개를 Graphormer용 그래프 딕셔너리로
+    """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
@@ -86,14 +89,16 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
     if len(Chem.GetMolFrags(mol)) > 1:
         return None
 
+    # 부분 전하 계산
     try:
         AllChem.ComputeGasteigerCharges(mol)
     except:
         print("partial charge calculation failed")
         pass
 
+    # 다양한 feature를 smiles 로부터 계산 #
     num_nodes = mol.GetNumAtoms()
-    adj = np.zeros((num_nodes, num_nodes), dtype=bool)
+    adj = np.zeros((num_nodes, num_nodes), dtype=bool) # Flase 로 차있는 adj
 
     node_features_cat = {key: [] for key in ATOM_FEATURES_VOCAB if isinstance(ATOM_FEATURES_VOCAB[key], list)}
     node_features_cont = {key: [] for key in float_feature_keys}
@@ -117,15 +122,16 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
                     try:
                         charge = float(atom.GetProp('_GasteigerCharge'))
                         node_features_cont[key].append(charge)
-                    except(KeyError, ValueError):
+                    except(KeyError, ValueError): # 오류가 난 경우 0
                         node_features_cont[key].append(0.0)
 
-    # Combine categorical features into a single integer array
+    # Combine categorical features into a single integer array : 정수형 또는 범주형
     x_cat = np.stack(list(node_features_cat.values()), axis=-1)
 
-    # Combine continuous features into a single float array
+    # Combine continuous features into a single float array : 실수형만
     x_cont = np.stack(list(node_features_cont.values()), axis=-1)
 
+    ### Bond Feature 들 ###
     attn_edge_type = {
         k: np.zeros((num_nodes, num_nodes, len(vocab)), dtype=np.int64)  # (N,N,D)
         for k, vocab in BOND_FEATURES_VOCAB.items()
@@ -134,7 +140,7 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
 
     for bond in mol.GetBonds():
         i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-        adj[i, j] = adj[j, i] = True
+        adj[i, j] = adj[j, i] = True # bond 에 있는 i위치와 j 위치를 사용하여 adj 인접행렬 완성 (N,N)
         edge_indices.extend([[i, j], [j, i]])
 
         for key, vocab in BOND_FEATURES_VOCAB.items():
@@ -143,17 +149,14 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
             elif key == 'is_conjugated': prop = int(bond.GetIsConjugated())
             elif key == 'is_in_ring':    prop = int(bond.IsInRing())
 
-            idx = _get_feature_index(prop, vocab)
-            attn_edge_type[key][i, j] = 1
-            attn_edge_type[key][j, i] = 1
+            # bond type 에는 단일, 이중, 삼중 ... 있다 가정
+            idx = _get_feature_index(prop, vocab) # bond type에서 단일 = 0 이중=1, 삼중=2 이런식으로 되어 있다 가정
+            attn_edge_type[key][i, j, idx] = 1    # 결합이 단일이면 정사각형 i,j,0 을 1로 채우고 나머지 i,j,1, i,j,2 등은 0으로 놔둠
+            attn_edge_type[key][j, i, idx] = 1    # attn_edge_type = (N,N,D)
 
-    spatial_pos = _compute_shortest_paths(adj)
-    #print("spatial_pos",spatial_pos)
+    spatial_pos = _compute_shortest_paths(adj) # 가장 짧은 경로를 나타내는 spatial pos 를 만듦
 
-    # np.inf 값이 포함된 분자(연결되지 않은 구성 요소를 가진 분자)는 제거
-    #if np.isinf(spatial_pos).any():
-    #    return None
-
+    # multi hop #
     edge_input = {
         key: np.zeros(
             (num_nodes, num_nodes, multi_hop_max_dist, len(vocab)),  # ← 4-D 로!
@@ -162,16 +165,21 @@ def smiles2graph_customized(smiles: str, multi_hop_max_dist: int = 5):
         for key, vocab in BOND_FEATURES_VOCAB.items()
     }
     # 2) 값 복사
+    # multi hop N,N,D,C
+    # 출발노드, 목적지노드, hop 별 슬롯 개수, Edge-type-one hot
+    # 3 hop 이 max 일 경우 : D 에 대해서 (1,0,0) (0,1,0) (0,0,1)이렇게 가능함
+    # 만약 3hop 인 경우 그 사이에 두개의 결합 -> C(=3) 길이의 one-hot 벡터가 hop 수(2개)만큼 “이어 붙여진” 구조
+    # multi_hop.png 참조
     for i in range(num_nodes):
         for j in range(num_nodes):
             dist = spatial_pos[i, j]
             if 1 <= dist < multi_hop_max_dist:
                 for key in BOND_FEATURES_VOCAB.keys():
-                    print(edge_input[key].shape)
-                    print(attn_edge_type[key].shape)
+                    #print(edge_input[key].shape)
+                    #print(attn_edge_type[key].shape)
                     edge_input[key][i, j, dist - 1, :] = attn_edge_type[key][i, j, :]
 
-    edge_input[key][i, j, dist - 1] = attn_edge_type[key][i, j]
+    # edge_input[key][i, j, dist - 1] = attn_edge_type[key][i, j]
 
     return {
         'x_cat': x_cat,
@@ -202,10 +210,10 @@ def get_global_feature_info(global_feature_names):
     continuous_feature_names_list = [name for name in global_feature_names if name not in nominal_feature_vocab]
 
     global_cat_dim = 0
-    for name in nominal_feature_vocab:
+    for name in nominal_feature_vocab: # 명목형
         global_cat_dim += len(nominal_feature_vocab[name])
 
-    global_cont_dim = len(continuous_feature_names_list)
+    global_cont_dim = len(continuous_feature_names_list) # 수치형
 
     return nominal_feature_vocab, continuous_feature_names_list, global_cat_dim, global_cont_dim
 
@@ -249,6 +257,8 @@ class SMILESDataset(Dataset):
         self.ex_normalize = ex_normalize
         self.prob_normalize = prob_normalize
         self.data.iloc[:, 1:101] = self.data.iloc[:, 1:101].apply(pd.to_numeric, errors="coerce").fillna(0)
+
+        # 정규화 관련 #
         ex_data = self.data[[f"ex{i}" for i in range(1, 51)]].values
         prob_data = self.data[[f"prob{i}" for i in range(1, 51)]].values
         self.global_ex_min = float(np.min(ex_data))
@@ -259,20 +269,20 @@ class SMILESDataset(Dataset):
         self.global_prob_max = float(np.max(prob_data))
         self.global_prob_mean = float(np.mean(prob_data))
         self.global_prob_std = float(np.std(prob_data))
-
         self.nm_dist_mode = nm_dist_mode
         self.nm_gauss_sigma = nm_gauss_sigma
+
         self.max_nodes = max_nodes
         self.multi_hop_max_dist = multi_hop_max_dist
         self.target_type = target_type
         self.attn_bias_weight = attn_bias_w
 
         # Generate raw graphs first, filtering out None values from invalid SMILES
-        self.raw_graphs = [g for g in [smiles2graph_customized(s) for s in self.data["smiles"]] if g is not None]
+        self.raw_graphs = [g for g in [smiles2graph_customized(s) for s in self.data["smiles"]] if g is not None] # smiles2graph_customized : smiles -> graph and graph feature
 
         # Preprocess graphs (will be modified in __getitem__ if is_global is True)
-        self.graphs = [self.preprocess_graph(g) for g in self.raw_graphs]
-        self.targets = self.process_targets()
+        self.graphs = [self.preprocess_graph(g) for g in self.raw_graphs] # preprocess_graph : graph_feautre to tensor
+        self.targets = self.process_targets() # tragets to tensor, Normalize targets
 
     # Removed _add_global_node_raw function as it's handled by the model
 
@@ -428,14 +438,14 @@ class SMILESDataset(Dataset):
 # ==============================================================================
 #  3. Collate Function and Utils
 # ==============================================================================
-def pad_tensor_x_dict(x_dict_item, max_n):
+def pad_tensor_x_dict(x_dict_item, max_n): # Not Used
     padded_x_dict = {}
     for key, tensor in x_dict_item.items():
         pad_len = max_n - tensor.size(0)
         padded_x_dict[key] = torch.nn.functional.pad(tensor, (0, 0, 0, pad_len), 'constant', 0)
     return padded_x_dict
 
-def pad_tensor_dict(tensor_dict_item, max_n, pad_dim_start, pad_dim_end):
+def pad_tensor_dict(tensor_dict_item, max_n, pad_dim_start, pad_dim_end): # Not used
     padded_dict = {}
     for key, tensor in tensor_dict_item.items():
         # Assuming tensor shape is (num_elements, feature_dim)
@@ -453,6 +463,10 @@ def pad_tensor_dict(tensor_dict_item, max_n, pad_dim_start, pad_dim_end):
 
 
 def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
+    """
+    1. 그래프마다 노드 수가 다르므로 패딩으로 크기를 맞추고
+    2. dict 형태로 흩어져 있던 edge-feature 들을 하나의 큰 Tensor 로 합칩니다.
+    """
     batch = [b for b in batch if b is not None and b[0] is not None]
     if not batch:
         return None
@@ -465,11 +479,11 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
     global_feat_cat_list = [g.get('global_features_cat', torch.empty(0, dtype=torch.long)) for g in graphs]
     global_feat_cont_list = [g.get('global_features_cont', torch.empty(0, dtype=torch.float32)) for g in graphs]
 
-    max_nodes = max(g['num_nodes'] for g in graphs) if graphs else 0
+    max_nodes = max(g['num_nodes'] for g in graphs) if graphs else 0 # 최대 노드 수
 
     # Collate node features
-    collated_x_cat = torch.stack([torch.nn.functional.pad(g['x_cat'], (0, 0, 0, max_nodes - g['num_nodes']), 'constant', 0) for g in graphs])
-    collated_x_cont = torch.stack([torch.nn.functional.pad(g['x_cont'], (0, 0, 0, max_nodes - g['num_nodes']), 'constant', 0) for g in graphs])
+    collated_x_cat = torch.stack([torch.nn.functional.pad(g['x_cat'], (0, 0, 0, max_nodes - g['num_nodes']), 'constant', 0) for g in graphs]) # (B, N_max, F_cat)
+    collated_x_cont = torch.stack([torch.nn.functional.pad(g['x_cont'], (0, 0, 0, max_nodes - g['num_nodes']), 'constant', 0) for g in graphs]) # (B, N_max, F_cat)
 
     # Collate global features
     collated_global_features_cat = torch.stack(global_feat_cat_list) if global_feat_cat_list and global_feat_cat_list[0].numel() > 0 else torch.empty(0)
@@ -482,8 +496,8 @@ def collate_fn(batch, ds, is_global=False, n_pairs=None, min_max=None):
 
     for g in graphs:
         pad_len = max_nodes - g['num_nodes']
-        adj_list.append(torch.nn.functional.pad(g['adj'], (0, pad_len, 0, pad_len)))
-        spatial_pos_list.append(torch.nn.functional.pad(g['spatial_pos'], (0, pad_len, 0, pad_len), value=510))
+        adj_list.append(torch.nn.functional.pad(g['adj'], (0, pad_len, 0, pad_len))) # (N_max,N_max)
+        spatial_pos_list.append(torch.nn.functional.pad(g['spatial_pos'], (0, pad_len, 0, pad_len), value=510)) # 510 = “없음” 토큰
         attn_bias_list.append(torch.nn.functional.pad(g['attn_bias'], (0, pad_len, 0, pad_len)))
         in_degree_list.append(torch.nn.functional.pad(g['in_degree'], (0, pad_len)))
         out_degree_list.append(torch.nn.functional.pad(g['out_degree'], (0, pad_len)))
@@ -643,3 +657,8 @@ if __name__ == "__main__":
 
     run_pipeline(args)
     show_feature_info(args.train_file)
+
+# attn_edge_type : “1-hop” 엣지의 one-hot 예: bond_type, stereo,
+# spatial_pos : 두 노드 최단 거리
+# attn_bias : 가상노드·거리·엣지 임베딩을 모두 합산하는 “빈 캔버스” 역할
+# edge_input : Multi-hop Edge feature 스택
