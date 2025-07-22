@@ -1,17 +1,3 @@
-"""graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3.py
-완성본 – 2‑loss(GradNorm) 기반 Graphormer 학습 + 평가 스크립트
-Author: ChatGPT (2025‑07‑18)
-
-주요 특징
------------
-* ex(에너지) / prob(오실레이터 강도) 두 채널을 동시에 학습하며 GradNorm 으로 가중치 동적 조정
-* Soft‑DTW/MSE/MAE/SID 등 다양한 loss 선택 가능 (loss_ex == loss_prob 로 가정)
-* ① 단일 학습(train) ② 전체 데이터 평가(in‑sample) 를 한 번에 수행
-* global categorical / continuous feature 정보를 자동 추출하여 config 에 반영
-* 학습 결과 및 손실 히스토리를 csv 로 저장
-* NaN 감지 및 디버깅 메시지 포함
-"""
-
 from __future__ import annotations
 
 # ===== 기본 패키지 =====
@@ -31,12 +17,12 @@ from torch.cuda.amp import GradScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 # ===== Graphormer / 사용자 정의 모듈 =====
-from Graphormer.GP5.data_prepare.DataLoader_QMData_base import (
+from Graphormer.GP5.data_prepare.DataLoader_QMData_GPIR import (
     SMILESDataset,
     collate_fn,
     get_global_feature_info,  # helper util – 사용자 정의
 )
-from Graphormer.GP5.models_base.graphormer_3 import GraphormerModel
+from Graphormer.GP5.models_IR.graphormer_3 import GraphormerModel
 from Graphormer.GP5.Custom_Loss.soft_dtw_cuda import SoftDTW
 from Graphormer.GP5.Custom_Loss.GradNorm import GradNorm
 from chemprop.train.loss_functions import sid_loss
@@ -107,7 +93,7 @@ def train_model_ex_porb(
         dataset,
         batch_size=batch_size,
         shuffle=True,
-        collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs),
+        collate_fn=lambda batch: collate_fn(batch, dataset,  is_global=True, n_pairs=n_pairs),
     )
 
     # ---------------- 모델/옵티마이저 ----------------
@@ -251,7 +237,7 @@ def train_model_ex_porb(
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        collate_fn=lambda b: collate_fn(b, dataset, n_pairs=n_pairs),
+        collate_fn=lambda b: collate_fn(b, dataset, n_pairs=n_pairs, is_global=True),
     )
 
     y_true_all, y_pred_all = [], []
@@ -302,14 +288,18 @@ def main() -> None:
 
     try:
         nominal_dims, continuous_feature_names, global_cat_dim, global_cont_dim = get_global_feature_info(global_feature_names)
+        print(nominal_dims)
+        print(continuous_feature_names)
+        print(global_cat_dim)
+        print(global_cont_dim)
     except Exception as e:
         print("[WARN] global feature info 오류, fallback 사용:", e)
         nominal_dims, continuous_feature_names = {}, []
         global_cat_dim, global_cont_dim = 1, 2
 
     # device (GPU/CPU) 설정 전역 변수화
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
     # ---------- Graphormer config ----------
     config: Dict = {
         "num_atoms": 100,
@@ -334,6 +324,8 @@ def main() -> None:
         "output_size": 100,
         "global_cat_dim": global_cat_dim,
         "global_cont_dim": global_cont_dim,
+        "num_categorical_features": 7,  # (= 7 atom categorical + 1 global nominal feature)
+        "num_continuous_features": 2,  # (= 2 atom continuous)
     }
 
     # ---------- 학습 루프 ----------

@@ -1,0 +1,66 @@
+핵심 컨벤션 (재확인)
+7월 19일 고친것
+-- attn_edge_type: (N, N, D_vocab) Dataloader, Dataset 내에서 one-hot 으로 생성 -> collate_fn 단계에서 torch.long 으로 변환
+
+one hot 으로 생성시 가능한 모든 type 에 대해 만약 D = 4 일경우 0001 0100 이런식 가능 (N, N, D_vocab)
+attn_edge_type["bond_type"].shape      # (26, 26, 4)   ③번 축 4 = single/double/triple/aromatic
+attn_edge_type["stereo"].shape         # (26, 26, 6)
+attn_edge_type["is_conjugated"].shape  # (26, 26, 2)
+attn_edge_type["is_in_ring"].shape     # (26, 26, 2)
+
+long으로 생성시
+(26, 26) 이 텐서 안에 0, 1, 2, 3 이런식의 index가 차게 됨
+Collante 단계에서 차원과 관련된 함수 존재 t.shape = (N, N) ⇒ 맨마지막이 디멘션이 되어 D = N (노드 수)
+torch.stack 코드가 본래 one hot 가정하여 N,N,D 형으로 합치게 하기 때문에 오류가 나게 됨
+
+-- edge_input: (N, N, multi_hop_max_dist, D_vocab) one-hot, torch.long
+
+-- GraphNodeFeature 출력: CLS + NewGlobal + N 노드 → 총 N+2
+Global Node 로 인해 N+1 인것을 N+2 로 모델 내를 모두 고치는 작업 존재 했음
+예를들어 QKV 등 계산시 텐서 크기 차이로 인한 오류
+
+"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\modules_base_attention\multihead_attention.py", line 115, in forward
+    attn_weights += attn_bias.view(bsz * self.num_heads, tgt_len, -1)
+RuntimeError: shape '[400, 36, -1]' is invalid for input of size 547600
+
+
+
+-- attn_bias : 동일한 길이(N+2)로 생성
+
+---- reshape/permute 단계는 하드코딩 숫자 대신 .shape 에서 직접 추출 ----
+---- (B, N, D, H 등)
+
+"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\modules_base_attention\graphormer_layers.py", line 264, in forward
+    edge_input = edge_input_flat.reshape(
+RuntimeError: shape '[2, 50, 35, 35, 8]' is invalid for input of size 19600
+
+# edge_input: (B, N, N, max_dist, num_heads)
+edge_input = self.edge_encoder(edge_input).sum(-2)   # ← 여기까지 그대로
+
+# ── NEW: 현재 텐서에서 실제 크기를 읽어온다 ─────────────────
+B, N, _, D, H = edge_input.shape       # B=batch, N=nodes, D=max_dist, H=num_heads
+# ─────────────────────────────────────────────────────────────
+
+edge_input_flat = edge_input.permute(3, 0, 1, 2, 4).reshape(
+    D, -1, self.num_heads             # (D, B*N*N, H)
+)
+
+edge_input_flat = torch.bmm(
+    edge_input_flat,
+    self.edge_dis_encoder.weight.view(-1, H, H)[:D]
+)
+
+# 여기서도 읽어온 B, N, H 사용
+edge_input = edge_input_flat.reshape(
+    D, B, N, N, H
+).permute(1, 2, 3, 0, 4)              # (B, N, N, D, H)
+
+# 이후 연산은 그대로
+edge_input = (edge_input.sum(-2) / spatial_pos_.float().unsqueeze(-1)).permute(0, 3, 1, 2)
+핵심
+reshape 에서 직접 숫자를 쓰지 말고 edge_input.shape 로부터 B, N, D, H 를
+다시 읽어오면, one-hot·multi-hop 변경과 무관하게 항상 맞습니다.
+
+"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_base\graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 209, in train_model_ex_porb
+    wts.append(weights.cpu().numpy())
+RuntimeError: Can't call numpy() on Tensor that requires grad. Use tensor.detach().numpy() instead.

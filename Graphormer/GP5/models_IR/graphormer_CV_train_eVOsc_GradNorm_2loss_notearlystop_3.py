@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from Graphormer.GP5.data_prepare.DataLoader_QMData_base import SMILESDataset, collate_fn, PREDEFINED_VOCAB
-from Graphormer.GP5.models_base.graphormer_3 import GraphormerModel
+from Graphormer.GP5.data_prepare.DataLoader_QMData_GPIR import SMILESDataset, collate_fn, PREDEFINED_VOCAB, get_global_feature_info
+from Graphormer.GP5.models_IR.graphormer_3 import GraphormerModel
 import os
 from Graphormer.GP5.Custom_Loss.custom_loss import fastdtw_loss
 from Graphormer.GP5.Custom_Loss.soft_dtw_cuda import SoftDTW
@@ -14,7 +14,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from Graphormer.GP5.Custom_Loss.fast_dtw import fastdtw
 import time
 from sklearn.model_selection import KFold
-from Graphormer.GP5.models_base.graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3 import train_model_ex_porb
+from Graphormer.GP5.models_IR.graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3 import train_model_ex_porb
 from chemprop.train.loss_functions import sid_loss
 from Graphormer.GP5.Custom_Loss.GradNorm import GradNorm
 
@@ -137,22 +137,24 @@ def cross_validate_model(
         train_loader = DataLoader(
             train_subset,
             batch_size=batch_size,
-            collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs),
+            collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs, is_global=True),
 
         )
         val_loader = DataLoader(
             val_subset,
             batch_size=batch_size,
-            collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs),
+            collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs, is_global=True),
         )
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cpu")
         for batch in train_loader:
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
         # Initialize model, loss functions, and optimizer
         model = GraphormerModel(config)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cpu")
         model = model.to(device)
 
         SoftDTWLoss = SoftDTW(use_cuda=True, gamma=0.2, bandwidth=None, normalize=True)
@@ -210,10 +212,10 @@ def cross_validate_model(
             batchcount = 0
             for batch in train_loader:
                 batchcount +=1
-                gpu_used = torch.cuda.memory_allocated(device) / 1024 ** 2  # MiB
-                gpu_reserved = torch.cuda.memory_reserved(device) / 1024 ** 2  # MiB
-                cpu_ram = process.memory_info().rss / 1024 ** 2  # MiB
-                print(batchcount, f"gpu_used: {gpu_used}, gpu_reserved: {gpu_reserved}, cpu_ram: {cpu_ram}")
+                #gpu_used = torch.cuda.memory_allocated(device) / 1024 ** 2  # MiB
+                #gpu_reserved = torch.cuda.memory_reserved(device) / 1024 ** 2  # MiB
+                #cpu_ram = process.memory_info().rss / 1024 ** 2  # MiB
+                #print(batchcount, f"gpu_used: {gpu_used}, gpu_reserved: {gpu_reserved}, cpu_ram: {cpu_ram}")
 
                 batch_data_for_model = {}
                 for k, v in batch.items():
@@ -600,7 +602,7 @@ def cross_validate_model(
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
-        collate_fn=lambda batch: collate_fn(batch, test_dataset, n_pairs=n_pairs, min_max=[train_min, train_max] ),
+        collate_fn=lambda batch: collate_fn(batch, test_dataset, is_global=True, n_pairs=n_pairs, min_max=[train_min, train_max] ),
     )
     print("batch_size",batch_size)
     model.load_state_dict(torch.load(best_model_path,))
@@ -621,7 +623,8 @@ def evaluate_on_test_set(model, test_loader, device, target_type):
         "test_sis_ex": [], "test_sis_prob": [], "test_sis_combined": []
     }
     print("evaluating on test set")
-    SoftDTWLoss = SoftDTW(use_cuda=True, gamma=0.2, bandwidth=None, normalize=True)
+    #SoftDTWLoss = SoftDTW(use_cuda=True, gamma=0.2, bandwidth=None, normalize=True)
+    SoftDTWLoss = SoftDTW(use_cuda=False, gamma=0.2, bandwidth=None, normalize=True)
     with torch.no_grad():
         for batch in test_loader:
             batch_data_for_model = {}
@@ -738,6 +741,8 @@ if __name__ == "__main__":
         "output_size": 100,  # 모델 출력 크기
         "global_cat_dim": 5, # Dynamically set global categorical feature dimension
         "global_cont_dim": 5, # Dynamically set global continuous feature dimension
+        "num_categorical_features": 7, # (= 7 atom categorical + 1 global nominal feature)
+        "num_continuous_features": 2, # (= 2 atom continuous + 2 global continuous feature)
     }
     results_list = []
     loss_fn_list = ["SID"]

@@ -53,7 +53,7 @@ BOND_FEATURES_VOCAB = {
     ],
     'is_conjugated': [0, 1],  # OK when diffusion
     'is_in_ring': [0, 1],  # OK when diffusion
-    'global_node': [0, 1],
+    'is_global': [0, 1],
 }
 
 
@@ -401,6 +401,9 @@ class SMILESDataset(Dataset):
 
             # ---------- 연속형 글로벌 피처 값 ----------
             g_cont = [float(row[feat]) for feat in self.continuous_feature_names]
+
+            if max(g_cat) >= global_cat_dim:
+                print("[DBG] g_cat overflow:", g_cat, "smiles:")
 
             # ---------- 그래프 생성 ----------
             g = smiles2graph_with_global(

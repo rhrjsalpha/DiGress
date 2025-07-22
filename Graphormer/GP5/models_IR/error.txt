@@ -1,0 +1,20 @@
+C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_base\graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3.py:117: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler = GradScaler()
+Traceback (most recent call last):
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_base\graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 375, in <module>
+    main()
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_base\graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 344, in main
+    res, best_path = train_model_ex_porb(
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_base\graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 164, in train_model_ex_porb
+    for batch in dataloader:
+  File "C:\Users\kogun\AppData\Local\anaconda3\envs\graphormer\lib\site-packages\torch\utils\data\dataloader.py", line 708, in __next__
+    data = self._next_data()
+  File "C:\Users\kogun\AppData\Local\anaconda3\envs\graphormer\lib\site-packages\torch\utils\data\dataloader.py", line 764, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "C:\Users\kogun\AppData\Local\anaconda3\envs\graphormer\lib\site-packages\torch\utils\data\_utils\fetch.py", line 55, in fetch
+    return self.collate_fn(data)
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_base\graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 110, in <lambda>
+    collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs),
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\DataLoader_QMData_base.py", line 484, in collate_fn
+    feature_tensors_attn_edge_type.append(torch.stack(collated_attn_edge_type[key]))
+RuntimeError: stack expects each tensor to be equal size, but got [35, 35, 26] at entry 0 and [35, 35, 19] at entry 2
