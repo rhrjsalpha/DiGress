@@ -34,10 +34,7 @@ class GraphNodeFeature(nn.Module):
         self.out_degree_encoder = nn.Embedding(num_out_degree, hidden_dim, padding_idx=0)
         
         # Encoder for continuous features
-        print(num_continuous_features)
-        print(global_cont_dim)
         self.cont_input_dim = num_continuous_features + global_cont_dim
-        print("self.cont_input_dim",self.cont_input_dim)
         self.continuous_encoder = nn.Linear(self.cont_input_dim, hidden_dim)
 
         # Global feature encoders
@@ -89,8 +86,6 @@ class GraphNodeFeature(nn.Module):
         out_deg_feat = self.out_degree_encoder(out_degree)
         
         # Encode continuous features
-        print("x_cat.size()",x_cat.size())
-        print("x_cont", x_cont.size())
         continuous_feat = self.continuous_encoder(x_cont)
 
         # Collect all features to concatenate
@@ -170,14 +165,14 @@ class GraphAttnBias(nn.Module):
             batched_data["attn_edge_type"], # In Ring
         )
         #print("-----GraphAttnBias_inputs------")
-        print('attn_bias', attn_bias.shape, attn_bias.dtype)
-        print('spatial_pos', spatial_pos.shape, spatial_pos.dtype)
+        #print('attn_bias', attn_bias.shape, attn_bias.dtype)
+        #print('spatial_pos', spatial_pos.shape, spatial_pos.dtype)
         #print("spatial_pos min:", spatial_pos.min().item())
         #print("spatial_pos max:", spatial_pos.max().item())
         #print("embedding weight size:", self.spatial_pos_encoder.weight.size(0))
-        print('x_cat', x_cat.shape, x_cat.dtype) # Changed from x
-        print('edge_input', edge_input.shape, edge_input.dtype)
-        print('attn_edge_type', attn_edge_type.shape, attn_edge_type.dtype)
+        #print('x_cat', x_cat.shape, x_cat.dtype) # Changed from x
+        #print('edge_input', edge_input.shape, edge_input.dtype)
+        #print('attn_edge_type', attn_edge_type.shape, attn_edge_type.dtype)
         #print("--------------------------------")
         ##################################################
         #### 적절한 텐서 크기를 가지도록 텐서를 생성하는 과정 ####
@@ -203,20 +198,13 @@ class GraphAttnBias(nn.Module):
         #print("graph_attn_bias[:, :, :, :]",graph_attn_bias[:, :, :, :].shape) #[batch,head,node,node]
 
         #### attn_bias 에 spatial_pos_bias 를 더함 ###
-        print(spatial_pos_bias.shape)
-        print(graph_attn_bias.shape)
         graph_attn_bias[:, :, :, :] += spatial_pos_bias
         ############################################## [batch,head,node,node] + [batch,head,node,node]
-
-        ### Add virtual distance for the graph token 가상노드와의 distance 인 1을 추가 ###
-        # t = self.graph_token_virtual_distance.weight.view(1, self.num_heads, 1)
-        #print("t, Add virtual distance for the graph token", t.shape) # [1, head, 1]
 
         # 기존 graph_attn_bias 크기: [batch_size, num_heads, num_nodes, num_nodes]
         batch_size, num_heads, num_nodes, _ = graph_attn_bias.size()
 
         # 가상 노드를 포함하도록 크기 확장 (CLS + Nodes)
-        print(batch_size, num_heads, num_nodes, num_nodes)
         new_bias = torch.full((batch_size, num_heads,num_nodes + 1, num_nodes + 1), -1e9, device=graph_attn_bias.device)
         new_bias[:, :, 1:, 1:] = graph_attn_bias
 
@@ -225,16 +213,6 @@ class GraphAttnBias(nn.Module):
         t_cls = self.graph_token_virtual_distance.weight.view(1, self.num_heads, 1)
         new_bias[:, :, 1:, 0] = t_cls  # CLS -> New Global Node, Nodes
         new_bias[:, :, 0, 1:] = t_cls  # New Global Node, Nodes -> CLS
-
-        # New Global Node (인덱스 1)와의 거리 추가
-        t_new_global = self.new_global_node_virtual_distance.weight.view(1, self.num_heads, 1)
-        # New Global Node -> CLS/VNode
-        new_bias[:, :, 0, 1] = t_new_global.squeeze(-1) # CLS -> New Global Node
-        new_bias[:, :, 1, 0] = t_new_global.squeeze(-1) # New Global Node -> CLS
-
-        # New Global Node -> Nodes (모든 원자와 가상의 '거리 1'로 연결)
-        new_bias[:, :, 2:, 1] = t_new_global # Nodes -> New Global Node
-        new_bias[:, :, 1, 2:] = t_new_global # New Global Node -> Nodes
 
         #print("new_bias", new_bias.shape) # [batch_size, num_heads, num_nodes + 2, num_nodes + 2]
 
@@ -246,9 +224,14 @@ class GraphAttnBias(nn.Module):
         # Encode edge features
         if hasattr(self, "edge_dis_encoder"):
             spatial_pos_ = spatial_pos.clone()
-            spatial_pos_ = torch.where(torch.isinf(spatial_pos_), torch.tensor(0.0, device=spatial_pos_.device), spatial_pos_) # inf 값을 0으로 임시 대체
+
+            spatial_pos_ = torch.where(torch.isinf(spatial_pos_), torch.tensor(0.0, device=spatial_pos_.device), spatial_pos_) # inf 값을 0으로 임시 대체 # inf → 0으로 대체 (안전하게 처리)
+
+            # self-loop 포함: 거리 0이었던 것들은 모두 1로 간주 (softmax 분모 방지용)
             spatial_pos_[spatial_pos_ == 0] = 1
+
             spatial_pos_ = torch.where(spatial_pos_ > 1, spatial_pos_ - 1, spatial_pos_)
+
             if self.multi_hop_max_dist > 0:
                 spatial_pos_ = spatial_pos_.clamp(0, self.multi_hop_max_dist)
                 edge_input = edge_input[:, :, :, : self.multi_hop_max_dist, :]
@@ -257,7 +240,6 @@ class GraphAttnBias(nn.Module):
 
             # ── NEW: 현재 텐서에서 실제 크기를 읽어온다 ─────────────────
             B, N, _, D, H = edge_input.shape  # B=batch, N=nodes, D=max_dist, H=num_heads
-            print(edge_input.shape)
 
             max_dist = edge_input.size(-2)
             edge_input_flat = edge_input.permute(3, 0, 1, 2, 4).reshape(
@@ -282,17 +264,7 @@ class GraphAttnBias(nn.Module):
             ).permute(0, 3, 1, 2)
         else:
             edge_input = self.edge_encoder(attn_edge_type).sum(-2).permute(0, 3, 1, 2)
-        #print("spatial_pos shape after:", spatial_pos.shape)
 
-        #print("edge_input, last", edge_input.shape)
-        #print("new_bias[:, :, :, :], last", new_bias[:, :, :, :].shape)
         new_bias[:, :, 1:, 1:] += edge_input
-        #print("new_bias += edge_input", new_bias.shape)
 
-        #print("attn_bias.shape", attn_bias.shape)
-        
-        #print("new_bias += attn_bias", new_bias.shape)
-
-        
-        
         return new_bias.view(batch_size * num_heads, num_nodes + 1, num_nodes + 1)

@@ -146,15 +146,15 @@ def cross_validate_model(
             collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs, is_global=True),
         )
 
-        #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        device = torch.device("cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #device = torch.device("cpu")
         for batch in train_loader:
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
         # Initialize model, loss functions, and optimizer
         model = GraphormerModel(config)
-        #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        device = torch.device("cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #device = torch.device("cpu")
         model = model.to(device)
 
         SoftDTWLoss = SoftDTW(use_cuda=True, gamma=0.2, bandwidth=None, normalize=True)
@@ -677,18 +677,18 @@ def evaluate_on_test_set(model, test_loader, device, target_type):
                                                                           device)).item())
 
                 # SID 및 SIS 계산
-                sid_ex = sid_loss(torch.tensor(y_pred_ex).unsqueeze(0).to(device),
-                                  torch.tensor(y_true_ex).unsqueeze(0).to(device),
+                sid_ex = sid_loss(torch.tensor(y_pred_ex + 1e-8).unsqueeze(0).to(device),
+                                  torch.tensor(y_true_ex + 1e-8).unsqueeze(0).to(device),
                                   torch.ones_like(torch.tensor(y_pred_ex).unsqueeze(0), dtype=torch.bool).to(device),
-                                  threshold=1e-4).mean().item()
-                sid_prob = sid_loss(torch.tensor(y_pred_prob).unsqueeze(0).to(device),
-                                    torch.tensor(y_true_prob).unsqueeze(0).to(device),
+                                  threshold=1e-8).mean().item()
+                sid_prob = sid_loss(torch.tensor(y_pred_prob + 1e-8).unsqueeze(0).to(device),
+                                    torch.tensor(y_true_prob + 1e-8).unsqueeze(0).to(device),
                                     torch.ones_like(torch.tensor(y_pred_prob).unsqueeze(0), dtype=torch.bool).to(device),
-                                    threshold=1e-4).mean().item()
-                sid_combined = sid_loss(torch.tensor(y_pred).unsqueeze(0).to(device),
-                                        torch.tensor(y_true).unsqueeze(0).to(device),
+                                    threshold=1e-8).mean().item()
+                sid_combined = sid_loss(torch.tensor(y_pred + 1e-8).unsqueeze(0).to(device),
+                                        torch.tensor(y_true + 1e-8).unsqueeze(0).to(device),
                                         torch.ones_like(torch.tensor(y_pred).unsqueeze(0), dtype=torch.bool).to(device),
-                                        threshold=1e-4).mean().item()
+                                        threshold=1e-8).mean().item()
 
                 # SID 및 SIS NaN 체크 및 저장
                 if not math.isnan(sid_ex):
