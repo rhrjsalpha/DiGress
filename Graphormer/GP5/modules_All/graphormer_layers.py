@@ -157,6 +157,7 @@ class GraphAttnBias(nn.Module):
         super(GraphAttnBias, self).__init__()
         self.mode = mode
         self.num_heads = num_heads
+        self.num_atoms = num_atoms
         self.multi_hop_max_dist = multi_hop_max_dist
 
         # Embeddings for edge features and spatial positions
@@ -228,21 +229,6 @@ class GraphAttnBias(nn.Module):
             (batch_size, self.num_heads, n_node + total_virtual, n_node + total_virtual),
             -1e9, device=graph_attn_bias.device
         )
-        new_bias[:, :, total_virtual:, total_virtual:] = graph_attn_bias + edge_input
-
-        # CLS virtual 연결
-        t_cls = self.graph_token_virtual_distance.weight.view(1, self.num_heads, 1)
-        new_bias[:, :, total_virtual:, 0] = t_cls
-        new_bias[:, :, 0, total_virtual:] = t_cls
-
-        # GlobalNode 연결 (모델 내 삽입 모드일 때만)
-        if self.mode == "cls_global_model":
-            t_global = self.global_node_virtual_distance.weight.view(1, self.num_heads, 1)
-            new_bias[:, :, total_virtual:, 1] = t_global
-            new_bias[:, :, 1, total_virtual:] = t_global
-            new_bias[:, :, 0, 1] = t_global.squeeze(-1)
-            new_bias[:, :, 1, 0] = t_global.squeeze(-1)
-
 
         ######################################
         #### 준비된 텐서에 값을 채워 넣는 과정 ####
@@ -262,7 +248,6 @@ class GraphAttnBias(nn.Module):
 
             # ── NEW: 현재 텐서에서 실제 크기를 읽어온다 ─────────────────
             B, N, _, D, H = edge_input.shape  # B=batch, N=nodes, D=max_dist, H=num_heads
-            print(edge_input.shape)
 
             max_dist = edge_input.size(-2)
             edge_input_flat = edge_input.permute(3, 0, 1, 2, 4).reshape(
@@ -288,6 +273,25 @@ class GraphAttnBias(nn.Module):
         else:
             edge_input = self.edge_encoder(attn_edge_type).sum(-2).permute(0, 3, 1, 2)
 
-        new_bias[:, :, 2:, 2:] += edge_input
+        print("graph_attn_bias:", graph_attn_bias.shape)
+        print("edge_input:", edge_input.shape)
+        print("new_bias:", new_bias.shape)
+        print("total_virtual:", total_virtual)
+        new_bias[:, :, total_virtual:, total_virtual:] = graph_attn_bias + edge_input
 
-        return new_bias.view(batch_size * num_heads, num_nodes + 2, num_nodes + 2)
+        # CLS virtual 연결
+        t_cls = self.graph_token_virtual_distance.weight.view(1, self.num_heads, 1)
+        new_bias[:, :, total_virtual:, 0] = t_cls
+        new_bias[:, :, 0, total_virtual:] = t_cls
+
+        # GlobalNode 연결 (모델 내 삽입 모드일 때만)
+        if self.mode == "cls_global_model":
+            t_global = self.global_node_virtual_distance.weight.view(1, self.num_heads, 1)
+            new_bias[:, :, total_virtual:, 1] = t_global
+            new_bias[:, :, 1, total_virtual:] = t_global
+            new_bias[:, :, 0, 1] = t_global.squeeze(-1)
+            new_bias[:, :, 1, 0] = t_global.squeeze(-1)
+
+        #new_bias[:, :, 2:, 2:] += edge_input
+
+        return new_bias #new_bias.view(batch_size * self.num_heads, self.num_atoms + total_virtual, self.num_atoms + total_virtual)
