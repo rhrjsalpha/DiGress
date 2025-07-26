@@ -100,9 +100,7 @@ class GraphormerModel(nn.Module):
             if targets is not None:
                 # Infer output size dynamically based on target shape
                 if target_type == "default":
-                    print(targets.shape)
                     output_size = targets.size(-1)  # Default target's last dimension
-                    print("output_size is ",output_size)
                 elif target_type == "ex_prob":
                     output_size = targets.size(1) * 2  # Number of pairs * 2 ([ex, prob] pairs)
                 elif target_type == "nm_distribution":
@@ -110,13 +108,11 @@ class GraphormerModel(nn.Module):
                 else:
                     raise ValueError(f"Unknown target_type: {target_type}")
 
-                #print("Dynamically determined output_size:", output_size)
             else:
                 # Default sizes based on target_type when targets are not provided
                 output_size = 100 if self.target_type == "default" else (
                     50 * 2 if self.target_type == "ex_prob" else 801
                 )
-                #print("Fallback output_size (default):", output_size)
             print("output_size.shape",output_size)
             # Initialize the output layer with dynamically determined output size
             self.output_layer = nn.Linear(self.embedding_dim, output_size).to(node_embeddings.device)

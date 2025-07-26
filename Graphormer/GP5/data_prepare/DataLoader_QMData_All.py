@@ -95,7 +95,6 @@ def smiles2graph_customized(
     global_idx = num_nodes
     adj = np.zeros((num_nodes, num_nodes), dtype=bool)  # Flase 로 차있는 adj
 
-    print(ATOM_FEATURES_VOCAB)
     node_features_cat = {key: [] for key in ATOM_FEATURES_VOCAB if isinstance(ATOM_FEATURES_VOCAB[key], list)}
     node_features_cont = {key: [] for key in float_feature_keys}
 
@@ -380,7 +379,6 @@ class UnifiedSMILESDataset(Dataset):
 
     def _preprocess_graph_with_optional_global(self, idx, graph, ATOM_FEATURES_VOCAB, float_feature_keys, BOND_FEATURES_VOCAB):
         if self.mode == "cls+global_data":
-            print("cls+global_data mode")
             global_cat = self._get_global_feature_cat_tensor(idx).tolist()
             global_cont = self._get_global_feature_cont_tensor(idx).tolist()
             return smiles2graph_with_global(
@@ -393,7 +391,7 @@ class UnifiedSMILESDataset(Dataset):
                 BOND_FEATURES_VOCAB = BOND_FEATURES_VOCAB
             )
         else:
-            print(print("cls only OR cls+global_model mode"))
+            # print(print("cls only OR cls+global_model mode"))
             return graph
 
     def _build_nominal_feature_info(self):
@@ -505,13 +503,12 @@ class UnifiedSMILESDataset(Dataset):
 
         # 오직 cls+global_data 모드일 때만 포함
         if self.mode == "cls+global_data":
-            print("cls+global_data mode")
             global_cat = torch.tensor(graph.get("global_features_cat", []), dtype=torch.long)
             global_cont = torch.tensor(graph.get("global_features_cont", []), dtype=torch.float32)
             g["global_features_cat"] = global_cat
             g["global_features_cont"] = global_cont
-        else:
-            print("cls only OR cls+global_data mode")
+        #else:
+        #    print("cls only OR cls+global_data mode")
 
         return g
 
@@ -585,7 +582,6 @@ def collate_fn(batch, ds, n_pairs=None, min_max=None):
             pad_t = torch.zeros((max_nodes, max_nodes, max_dist, D), dtype=t.dtype)
             pad_t[:g['num_nodes'], :g['num_nodes'], :, :] = t
             collated_edge_input[key].append(pad_t)
-    print("attn_bias_list[0].shape",attn_bias_list[0].shape)
     collated_attn_edge_type_tensor = torch.cat(
         [torch.stack(collated_attn_edge_type[key]) for key in collated_attn_edge_type], dim=-1
     )

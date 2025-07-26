@@ -61,6 +61,7 @@ def train_model_ex_porb(
     dataset_path: str,
     DATASET=None,
     alpha: float = 0.12,
+    is_cv: bool = False,
     global_feature_names: List[str] | None = None,
     ex_normalize: str = "ex",
     prob_normalize: str = "prob",
@@ -77,6 +78,7 @@ def train_model_ex_porb(
 
     # ---------------- 데이터 로딩 ----------------
     print("config[mode]",config["mode"])
+    print("target_type", config.get("target_type"))
     if DATASET is None:
         dataset = UnifiedSMILESDataset(
             csv_file=dataset_path,
@@ -173,7 +175,7 @@ def train_model_ex_porb(
 
             optimizer.zero_grad()
             outputs = model(batch_data, targets=targets, target_type=target_type)
-            print("outputs.shape",outputs.shape)
+            print("outputs.shape",outputs.shape, targets.shape)
             out_ex, tgt_ex = outputs[:, :, 0:1] + 1e-8, targets[:, :, 0:1] + 1e-8
             out_prob, tgt_prob = outputs[:, :, 1:2] + 1e-8, targets[:, :, 1:2] + 1e-8
 
@@ -211,7 +213,7 @@ def train_model_ex_porb(
             norm_ex = loss_ex / first_loss_ex
             norm_prob = loss_prob / first_loss_prob
 
-            weights = gradnorm.compute_weights([loss_ex, loss_prob], model),
+            weights = gradnorm.compute_weights([loss_ex, loss_prob], model)
             wts.append(weights.detach().cpu().numpy())
 
             total_loss = weight_true[0] * norm_ex + weight_true[1] * norm_prob
@@ -251,40 +253,216 @@ def train_model_ex_porb(
     model.load_state_dict(torch.load(best_model_path))
     model.eval()
 
-    # 간단 평가 – 전체 데이터에 대해 예측 후 R2/MAE/RMSE
-    loader_eval = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=lambda b: collate_fn(b, dataset, n_pairs=n_pairs, is_global=True),
-    )
+    # 스펙트럼별 결과 저장용 리스트 초기화
+    # Initialize lists for individual and combined metrics
+    sid_spectrum_ex, sid_spectrum_prob, sid_spectrum_combined = [], [], []
+    sis_spectrum_ex, sis_spectrum_prob, sis_spectrum_combined = [], [], []
+    r2_spectrum_ex, r2_spectrum_prob, r2_spectrum_combined = [], [], []
+    mae_spectrum_ex, mae_spectrum_prob, mae_spectrum_combined = [], [], []
+    rmse_spectrum_ex, rmse_spectrum_prob, rmse_spectrum_combined = [], [], []
+    softdtw_spectrum_ex, softdtw_spectrum_prob, softdtw_spectrum_combined = [], [], []
+    fastdtw_spectrum_ex, fastdtw_spectrum_prob, fastdtw_spectrum_combined = [], [], []
 
-    y_true_all, y_pred_all = [], []
+    y_true_prob_nan_cases = []
+    y_pred_prob_nan_cases = []
+
     with torch.no_grad():
-        for batch in loader_eval:
-            batch_data = {k: v.to(device) for k, v in batch.items() if k != "targets"}
-            targets = batch["targets"].to(device)
-            outputs = model(batch_data, targets=targets, target_type=target_type)
-            y_true_all.append(targets.cpu().numpy())
-            y_pred_all.append(outputs.cpu().numpy())
+        for batch in dataloader:
+            batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
-    y_true_all = np.vstack(y_true_all)
-    y_pred_all = np.vstack(y_pred_all)
+            batched_data = {k: batch[k] for k in
+                            ["x_cat", "x_cont", "adj", "in_degree", "out_degree", "spatial_pos", "attn_bias", "edge_input",
+                             "attn_edge_type"]}
 
-    # ex / prob 나누어 단순 metric
-    r2_ex = r2_score(y_true_all[:, :, 0].flatten(), y_pred_all[:, :, 0].flatten())
-    r2_prob = r2_score(y_true_all[:, :, 1].flatten(), y_pred_all[:, :, 1].flatten())
-    mae_ex = mean_absolute_error(y_true_all[:, :, 0].flatten(), y_pred_all[:, :, 0].flatten())
-    mae_prob = mean_absolute_error(y_true_all[:, :, 1].flatten(), y_pred_all[:, :, 1].flatten())
+            targets = batch["targets"]
+            outputs = model(batched_data, targets=targets, target_type=target_type)
+            #outputs = torch.clamp(outputs, min=1e-8)
 
-    results = {
+            sid_spectrum_ex, sid_spectrum_prob, sid_spectrum_combined = [], [], []
+
+            nan_case_ex, nan_case_prob, nan_case_combined = 0, 0, 0  # NaN 카운트
+
+            # Batch에서 각 스펙트럼별로 계산
+            for i in range(targets.size(0)):  # batch_size 만큼 루프
+                y_true = targets[i].cpu().numpy()
+                #print("y_true.shape)",y_true.shape)
+                y_pred = outputs[i].cpu().detach().numpy()
+                #print("y_pred.shape",y_pred.shape)
+                if target_type == "ex_prob":
+                    # 2D 인덱싱이 필요한 경우 (배치 크기 x n_pairs x 2)
+                    y_true_ex = y_true[:, 0]  # ex 값들
+                    y_pred_ex = y_pred[:, 0]  # 예측된 ex 값들
+                    y_true_prob = y_true[:, 1]  # prob 값들
+                    y_pred_prob = y_pred[:, 1]  # 예측된 prob 값들
+
+
+                else:
+                    raise ValueError(f"Unknown target_type: {target_type}")
+
+                # SID 및 SIS 계산
+
+                #print("sid shape",torch.tensor(y_pred_ex).unsqueeze(0).to(device).shape, torch.tensor(y_true_ex).unsqueeze(0).to(device).shape)
+                #print(torch.ones_like(torch.tensor(y_pred_ex).unsqueeze(0), dtype=torch.bool).to(device).shape)
+                sid_ex = sid_loss(torch.tensor(y_pred_ex).unsqueeze(0).to(device),
+                                  torch.tensor(y_true_ex).unsqueeze(0).to(device),
+                                  torch.ones_like(torch.tensor(y_pred_ex).unsqueeze(0), dtype=torch.bool).to(
+                                      device),
+                                  threshold=1e-8).mean().item()
+                sid_prob = sid_loss(torch.tensor(y_pred_prob + 1e-8, device=device).unsqueeze(0).to(device),
+                                    torch.tensor(y_true_prob + 1e-8, device=device).unsqueeze(0).to(device),
+                                    torch.ones_like(torch.tensor(y_pred_prob).unsqueeze(0), dtype=torch.bool).to(
+                                        device),
+                                    threshold=1e-8).mean().item()
+
+                sid_combined = sid_loss(torch.tensor(y_pred + 1e-8, device=device).unsqueeze(0).to(device),
+                                        torch.tensor(y_true + 1e-8, device=device).unsqueeze(0).to(device),
+                                        torch.ones_like(torch.tensor(y_pred).unsqueeze(0), dtype=torch.bool).to(
+                                            device),
+                                        threshold=1e-8).mean().item()
+
+
+                # 스펙트럼별 계산 결과 저장
+                r2_ex = r2_score(y_true_ex, y_pred_ex)
+                r2_prob = r2_score(y_true_prob, y_pred_prob)
+                r2_combined = r2_score(y_true.flatten(), y_pred.flatten())
+
+                mae_ex = mean_absolute_error(y_true_ex, y_pred_ex)
+                mae_prob = mean_absolute_error(y_true_prob, y_pred_prob)
+                mae_combined = mean_absolute_error(y_true.flatten(), y_pred.flatten())
+
+                rmse_ex = mean_squared_error(y_true_ex, y_pred_ex, squared=False)
+                rmse_prob = mean_squared_error(y_true_prob, y_pred_prob, squared=False)
+                rmse_combined = mean_squared_error(y_true.flatten(), y_pred.flatten(), squared=False)
+
+                #print("softdtw_ex = SoftDTWLoss",torch.tensor(y_pred).unsqueeze(0).unsqueeze(-1).shape)
+                softdtw_ex = soft_dtw_fn(
+                    torch.tensor(y_pred_ex).unsqueeze(0).unsqueeze(-1).to(device),
+                    # (batch_size=1, seq_len, dimension=1)
+                    torch.tensor(y_true_ex).unsqueeze(0).unsqueeze(-1).to(device),
+                    # (batch_size=1, seq_len, dimension=1)
+                ).item()
+                softdtw_prob = soft_dtw_fn(
+                    torch.tensor(y_pred_prob).unsqueeze(0).unsqueeze(-1).to(device),
+                    torch.tensor(y_true_prob).unsqueeze(0).unsqueeze(-1).to(device)
+                ).item()
+                softdtw_combined = soft_dtw_fn(
+                    torch.tensor(y_pred).unsqueeze(0).to(device),
+                    torch.tensor(y_true).unsqueeze(0).to(device)
+                ).item()
+
+                fastdtw_ex, _ = fastdtw(torch.tensor(y_pred_ex), torch.tensor(y_true_ex))
+                fastdtw_prob, _ = fastdtw(torch.tensor(y_pred_prob), torch.tensor(y_true_prob))
+                fastdtw_combined, _ = fastdtw(torch.tensor(y_pred.flatten()), torch.tensor(y_true.flatten()))
+
+                    # NaN 체크 및 제외 # Nan 아닌 경우 SIS 계산
+
+                if not math.isnan(sid_ex):
+                    sid_spectrum_ex.append(sid_ex)
+                    sis_ex = 1 / (1 + sid_ex)
+                else:
+                    nan_case_ex += 1
+                    print(f"[SID_ex] NaN detected at case {i}")
+
+                if not math.isnan(sid_prob):
+                    sid_spectrum_prob.append(sid_prob)
+                    sis_prob = 1 / (1 + sid_prob)
+                else:
+                    nan_case_prob += 1
+                    print(f"[SID_prob] NaN detected at case {i}")
+
+                if not math.isnan(sid_combined):
+                    sid_spectrum_combined.append(sid_combined)
+                    sis_combined = 1 / (1 + sid_combined)
+                else:
+                    nan_case_combined += 1
+                    print(f"[SID_combined] NaN detected at case {i}")
+
+
+                sis_spectrum_ex.append(sis_ex)
+                sis_spectrum_prob.append(sis_prob)
+                sis_spectrum_combined.append(sis_combined)
+
+                r2_spectrum_ex.append(r2_ex)
+                r2_spectrum_prob.append(r2_prob)
+                r2_spectrum_combined.append(r2_combined)
+
+                mae_spectrum_ex.append(mae_ex)
+                mae_spectrum_prob.append(mae_prob)
+                mae_spectrum_combined.append(mae_combined)
+
+                rmse_spectrum_ex.append(rmse_ex)
+                rmse_spectrum_prob.append(rmse_prob)
+                rmse_spectrum_combined.append(rmse_combined)
+
+                softdtw_spectrum_ex.append(softdtw_ex)
+                softdtw_spectrum_prob.append(softdtw_prob)
+                softdtw_spectrum_combined.append(softdtw_combined)
+
+                fastdtw_spectrum_ex.append(fastdtw_ex)
+                fastdtw_spectrum_prob.append(fastdtw_prob)
+                fastdtw_spectrum_combined.append(fastdtw_combined)
+
+    # 스펙트럼별 평균 계산
+    r2_avg_ex = np.mean(r2_spectrum_ex)
+    r2_avg_prob = np.mean(r2_spectrum_prob)
+    r2_avg_combined = np.mean(r2_spectrum_combined)
+
+    mae_avg_ex = np.mean(mae_spectrum_ex)
+    mae_avg_prob = np.mean(mae_spectrum_prob)
+    mae_avg_combined = np.mean(mae_spectrum_combined)
+
+    rmse_avg_ex = np.mean(rmse_spectrum_ex)
+    rmse_avg_prob = np.mean(rmse_spectrum_prob)
+    rmse_avg_combined = np.mean(rmse_spectrum_combined)
+
+    softdtw_avg_ex = np.mean(softdtw_spectrum_ex)
+    softdtw_avg_prob = np.mean(softdtw_spectrum_prob)
+    softdtw_avg_combined = np.mean(softdtw_spectrum_combined)
+
+    fastdtw_avg_ex = np.mean([x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in fastdtw_spectrum_ex])
+    fastdtw_avg_prob = np.mean([x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in fastdtw_spectrum_prob])
+    fastdtw_avg_combined = np.mean(
+        [x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in fastdtw_spectrum_combined])
+
+    sid_avg_ex = np.mean(sid_spectrum_ex) if sid_spectrum_ex else np.nan
+    sid_avg_prob = np.mean(sid_spectrum_prob) if sid_spectrum_prob else np.nan
+    sid_avg_combined = np.mean(sid_spectrum_combined) if sid_spectrum_combined else np.nan
+
+    sis_avg_ex = np.mean(sis_spectrum_ex)
+    sis_avg_prob = np.mean(sis_spectrum_prob)
+    sis_avg_combined = np.mean(sis_spectrum_combined)
+    results = {}
+
+    print("SID ex 평균 (NaN 제외):", sid_avg_ex, "NaN 개수:", nan_case_ex)
+    print("SID prob 평균 (NaN 제외):", sid_avg_prob, "NaN 개수:", nan_case_prob)
+    print("SID combined 평균 (NaN 제외):", sid_avg_combined, "NaN 개수:", nan_case_combined)
+    # 결과 저장용 딕셔너리 생성
+
+    results.update({
         "best_epoch": best_epoch,
-        "total_loss_best": best_combined_loss,
-        "r2_ex": r2_ex,
-        "r2_prob": r2_prob,
-        "mae_ex": mae_ex,
-        "mae_prob": mae_prob,
-    }
+        "r2_avg_ex": r2_avg_ex,
+        "r2_avg_prob": r2_avg_prob,
+        "r2_avg_combined": r2_avg_combined,
+        "mae_avg_ex": mae_avg_ex,
+        "mae_avg_prob": mae_avg_prob,
+        "mae_avg_combined": mae_avg_combined,
+        "rmse_avg_ex": rmse_avg_ex,
+        "rmse_avg_prob": rmse_avg_prob,
+        "rmse_avg_combined": rmse_avg_combined,
+        "softdtw_avg_ex": softdtw_avg_ex,
+        "softdtw_avg_prob": softdtw_avg_prob,
+        "softdtw_avg_combined": softdtw_avg_combined,
+        "fastdtw_avg_ex": fastdtw_avg_ex,
+        "fastdtw_avg_prob": fastdtw_avg_prob,
+        "fastdtw_avg_combined": fastdtw_avg_combined,
+        "sid_avg_ex": sid_avg_ex,
+        "sid_avg_prob": sid_avg_prob,
+        "sid_avg_combined": sid_avg_combined,
+        "sis_avg_ex": sis_avg_ex,
+        "sis_avg_prob": sis_avg_prob,
+        "sis_avg_combined": sis_avg_combined,
+    })
+
     for k, v in history.items():
         results[f"{k}_history"] = v
 
@@ -391,6 +569,7 @@ def main() -> None:
         "num_categorical_features": 7,  # (= 7 atom categorical)
         "num_continuous_features": 2,  # (= 2 atom continuous)
         "mode": "cls_only", # "cls_only" , "cls_global_data", "cls_global_model"
+        "target_type": "ex_prob", # "default", "ex_prob", "nm_distribution"
     }
     config.update({
         "ATOM_FEATURES_VOCAB": ATOM_FEATURES_VOCAB,
