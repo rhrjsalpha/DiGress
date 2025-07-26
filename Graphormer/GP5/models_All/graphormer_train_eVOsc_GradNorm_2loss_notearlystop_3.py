@@ -568,7 +568,7 @@ def main() -> None:
         "output_size": 100,
         "num_categorical_features": 7,  # (= 7 atom categorical)
         "num_continuous_features": 2,  # (= 2 atom continuous)
-        "mode": "cls_global_data", # "cls_only" , "cls_global_data", "cls_global_model"
+        "mode": "cls_global_model", # "cls_only" , "cls_global_data", "cls_global_model"
         "target_type": "ex_prob", # "default", "ex_prob", "nm_distribution"
     }
     config.update({

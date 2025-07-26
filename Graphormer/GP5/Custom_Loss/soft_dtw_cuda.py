@@ -123,7 +123,8 @@ class _SoftDTWCUDA(Function):
         dtype = D.dtype
         #gamma = torch.cuda.FloatTensor([gamma])
         gamma = torch.tensor([gamma], dtype=torch.float32, device='cuda')
-        bandwidth = torch.cuda.FloatTensor([bandwidth])
+        #bandwidth = torch.cuda.FloatTensor([bandwidth])
+        bandwidth = torch.tensor([bandwidth], dtype=torch.float32, device='cuda')
 
         B = D.shape[0]
         N = D.shape[1]
