@@ -119,6 +119,7 @@ def train_model_ex_porb(
 
     # ---------------- 모델/옵티마이저 ----------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("config",config)
     model = GraphormerModel(config).to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     gradnorm = GradNorm(num_losses=2, alpha=alpha)
@@ -269,10 +270,11 @@ def train_model_ex_porb(
     with torch.no_grad():
         for batch in dataloader:
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-
-            batched_data = {k: batch[k] for k in
-                            ["x_cat", "x_cont", "adj", "in_degree", "out_degree", "spatial_pos", "attn_bias", "edge_input",
-                             "attn_edge_type"]}
+            all_keys = batch.keys()
+            batched_data = {k: batch[k] for k in all_keys if k != "targets"}
+            #batched_data = {k: batch[k] for k in
+            #                ["x_cat", "x_cont", "adj", "in_degree", "out_degree", "spatial_pos", "attn_bias", "edge_input",
+            #                 "attn_edge_type"]}
 
             targets = batch["targets"]
             outputs = model(batched_data, targets=targets, target_type=target_type)

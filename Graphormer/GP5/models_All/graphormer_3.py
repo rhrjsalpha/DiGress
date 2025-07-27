@@ -32,7 +32,8 @@ class GraphormerModel(nn.Module):
         super(GraphormerModel, self).__init__()
         self.target_type = target_type
         self.embedding_dim = config["embedding_dim"]
-        self.mode = mode
+        self.mode = config["mode"]
+        print("GraphormerModel self.mode", self.mode)
 
         # Encoder initialization
         self.encoder = GraphormerGraphEncoder(

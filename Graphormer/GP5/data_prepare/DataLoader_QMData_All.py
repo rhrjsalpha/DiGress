@@ -313,7 +313,7 @@ class UnifiedSMILESDataset(Dataset):
         nm_gauss_sigma: float = 10.0,
     ):
         self.mode = mode
-        self.is_global = mode in ("cls+global_data", "cls+global_model")
+        self.is_global = mode in ("cls_global_data", "cls_global_model")
         self.nominal_feature_vocab = nominal_feature_vocab
         self.continuous_feature_names = continuous_feature_names
         self.global_cat_dim = global_cat_dim
@@ -337,6 +337,8 @@ class UnifiedSMILESDataset(Dataset):
 
         self.raw_graphs = [g for g in [smiles2graph_customized(s, self.multi_hop_max_dist ,ATOM_FEATURES_VOCAB=ATOM_FEATURES_VOCAB, float_feature_keys=float_feature_keys, BOND_FEATURES_VOCAB=BOND_FEATURES_VOCAB) for s in self.data["smiles"]] if g is not None]
         self.graphs = [self._preprocess_graph_with_optional_global(i, g, ATOM_FEATURES_VOCAB, float_feature_keys, BOND_FEATURES_VOCAB, ) for i, g in enumerate(self.raw_graphs)]
+        for g in self.graphs:
+            print("",g.keys())
 
     def __getitem__(self, idx):
         tgt = self.targets[idx]
@@ -358,13 +360,13 @@ class UnifiedSMILESDataset(Dataset):
         g_processed = self.preprocess_graph(raw_g)
 
         # CLS + GlobalNode를 그래프에 미리 넣은 경우 → g_processed 안에 포함
-        if self.mode == "cls+global_data":
+        if self.mode == "cls_global_data":
             g_processed["global_features_cat"] = global_feat_cat_tensor
             g_processed["global_features_cont"] = global_feat_cont_tensor
             return g_processed, tgt, idx
 
         # CLS + GlobalNode를 모델에서 처리 → 그래프에는 안넣음
-        elif self.mode == "cls+global_model":
+        elif self.mode == "cls_global_model":
             return g_processed, tgt, idx, {
                 "global_features_cat": global_feat_cat_tensor,
                 "global_features_cont": global_feat_cont_tensor
@@ -378,7 +380,7 @@ class UnifiedSMILESDataset(Dataset):
         return len(self.graphs)
 
     def _preprocess_graph_with_optional_global(self, idx, graph, ATOM_FEATURES_VOCAB, float_feature_keys, BOND_FEATURES_VOCAB):
-        if self.mode == "cls+global_data":
+        if self.mode == "cls_global_data":
             global_cat = self._get_global_feature_cat_tensor(idx).tolist()
             global_cont = self._get_global_feature_cont_tensor(idx).tolist()
             return smiles2graph_with_global(
@@ -502,7 +504,7 @@ class UnifiedSMILESDataset(Dataset):
         }
 
         # 오직 cls+global_data 모드일 때만 포함
-        if self.mode == "cls+global_data":
+        if self.mode == "cls_global_data":
             global_cat = torch.tensor(graph.get("global_features_cat", []), dtype=torch.long)
             global_cont = torch.tensor(graph.get("global_features_cont", []), dtype=torch.float32)
             g["global_features_cat"] = global_cat
@@ -525,6 +527,7 @@ class UnifiedSMILESDataset(Dataset):
 
 def collate_fn(batch, ds, n_pairs=None, min_max=None):
     batch = [b for b in batch if b is not None and b[0] is not None]
+
     if not batch:
         return None
 
@@ -534,8 +537,17 @@ def collate_fn(batch, ds, n_pairs=None, min_max=None):
 
     # ─────────────────────────────────────
     # Global features 처리
-    global_feat_cat_list = [g.get('global_features_cat', torch.empty(0, dtype=torch.long)) for g in graphs]
-    global_feat_cont_list = [g.get('global_features_cont', torch.empty(0, dtype=torch.float32)) for g in graphs]
+    if ds.mode == "cls_global_model":
+        global_feat_cat_list = [b[3]["global_features_cat"] for b in batch]
+        global_feat_cont_list = [b[3]["global_features_cont"] for b in batch]
+
+    elif ds.mode == "cls_global_data":
+        global_feat_cat_list = [g.get('global_features_cat', torch.empty(0, dtype=torch.long)) for g in graphs]
+        global_feat_cont_list = [g.get('global_features_cont', torch.empty(0, dtype=torch.float32)) for g in graphs]
+
+    else:
+        global_feat_cat_list = []
+        global_feat_cont_list = []
 
     def stack_or_empty(tensor_list, dtype):
         if len(tensor_list) == 0 or tensor_list[0].numel() == 0:
@@ -605,7 +617,7 @@ def collate_fn(batch, ds, n_pairs=None, min_max=None):
 
     # ─────────────────────────────────────
     # Global Feature 모드일 경우만 추가
-    if ds.mode == "cls+global_data":
+    if ds.mode in ["cls_global_data", "cls_global_model"]:
         if collated_global_features_cat.numel() > 0:
             res["global_features_cat"] = collated_global_features_cat
         if collated_global_features_cont.numel() > 0:
@@ -630,7 +642,7 @@ def show_batch_shapes(batch, title="Batch"):
 def build_parser():
     p = argparse.ArgumentParser("UnifiedSMILESDataset pipeline")
     p.add_argument("--train_file", type=str, required=True)
-    p.add_argument("--mode", type=str, choices=["cls", "cls+global_data", "cls+global_model"], default="cls")
+    p.add_argument("--mode", type=str, choices=["cls", "cls_global_data", "cls_global_model"], default="cls")
     p.add_argument("--target_type", choices=["default", "ex_prob", "nm_distribution"], default="default")
     p.add_argument("--ex_norm", choices=["ex_min_max", "ex_std", "none"], default="none")
     p.add_argument("--prob_norm", choices=["prob_min_max", "prob_std", "none"], default="none")
@@ -683,7 +695,7 @@ def run_pipeline(args):
         GLOBAL_FEATURE_NAMES, PREDEFINED_VOCAB
     )
 
-    if args.mode not in ["cls", "cls+global_data", "cls+global_model"]:
+    if args.mode not in ["cls", "cls_global_data", "cls+global_model"]:
         raise ValueError("Invalid mode: choose from 'cls', 'cls+global_data', 'cls+global_model'")
 
     ds = UnifiedSMILESDataset(
@@ -721,7 +733,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         args = SimpleNamespace(
             train_file=r"C:\Users\analcheminfo\PycharmProjects\DiGress\Graphormer\graphormer_data\train_50_with_features.csv",
-            mode="cls+global_data",
+            mode="cls_global_data",
             target_type="nm_distribution",
             ex_norm="none",
             prob_norm="none",

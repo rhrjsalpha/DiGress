@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from Graphormer.GP5.modules_All.graphormer_graph_encoder_layer import GraphormerGraphEncoderLayer
 from Graphormer.GP5.modules_All.graphormer_layers import GraphNodeFeature, GraphAttnBias
+import torch.nn.functional as F
 
 class GraphormerGraphEncoder(nn.Module):
     def __init__(
@@ -102,6 +103,22 @@ class GraphormerGraphEncoder(nn.Module):
         # Compute attention bias
         attn_bias = self.graph_attn_bias(batched_data)
 
+        # (1) 패딩 마스크 생성 (x_cat의 첫 feature 기준으로 패딩 판단)
+        # x_cat: (B, N, F) — F: categorical features
+        x_cat = batched_data["x_cat"]
+        node_mask = (x_cat[:, :, 0] == 0)  # padding 노드 → True
+
+        # (2) CLS / Global 에 맞게 앞에 False pad
+        mode = self.graph_node_feature.mode  # 'cls_only', 'cls_global_model', etc.
+        if mode == "cls_only":
+            key_padding_mask = F.pad(node_mask, (1, 0), value=False)  # 앞에 CLS 1개
+        elif mode == "cls_global_model":
+            key_padding_mask = F.pad(node_mask, (2, 0), value=False)  # CLS + Global 2개
+        elif mode == "cls_global_data":
+            key_padding_mask = F.pad(node_mask, (1, 0), value=False)  # Global은 data에 포함
+        else:
+            raise ValueError(f"[GraphormerGraphEncoder] Unknown mode: {mode}")
+
         # Apply layer normalization and dropout
         x = self.dropout(self.layernorm(node_features))
 
@@ -111,7 +128,11 @@ class GraphormerGraphEncoder(nn.Module):
         # Apply encoder layers
         intermediate_states = []
         for layer in self.layers:
-            x, _ = layer(x, self_attn_bias=attn_bias)
+            x, _ = layer(
+                x,
+                self_attn_bias=attn_bias,
+                self_attn_padding_mask=key_padding_mask,
+            )
             intermediate_states.append(x)
 
         # Final representation

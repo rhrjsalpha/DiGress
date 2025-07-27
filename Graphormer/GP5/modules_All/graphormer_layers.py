@@ -54,9 +54,12 @@ class GraphNodeFeature(nn.Module):
         # The input dimension will be hidden_dim (from summed categorical) + hidden_dim (from continuous)
         # + hidden_dim (in_degree) + hidden_dim (out_degree) + hidden_dim (global_cat) + hidden_dim (global_cont)
         mlp_input_dim = hidden_dim * 4  # Initial: categorical, in_deg, out_deg, continuous
-        if self.global_cat_encoder is not None: mlp_input_dim += hidden_dim
-        if self.global_cont_encoder is not None: mlp_input_dim += hidden_dim
-
+        if self.mode == "cls_global_data":
+            if self.global_cat_encoder is not None:
+                mlp_input_dim += hidden_dim
+            if self.global_cont_encoder is not None:
+                mlp_input_dim += hidden_dim
+        print("graphormer_layers, mlp_input_dim:", mlp_input_dim)
         self.feature_mlp = nn.Sequential(
             nn.Linear(mlp_input_dim, hidden_dim),
             nn.ReLU(),
@@ -93,14 +96,19 @@ class GraphNodeFeature(nn.Module):
         # Collect all features to concatenate
         all_features = [categorical_feat, in_deg_feat, out_deg_feat, continuous_feat]
 
-        # Process global features if they exist
-        if self.mode != "cls_only":
+        ### Process global features ###
+
+        print("GraphNodeFeature self.mode", self.mode)
+        if self.mode  == "cls_global_data":
             if self.global_cat_encoder is not None:
+                print("graphormer_layers, batched_data.keys()",batched_data.keys())
                 global_features_cat = batched_data["global_features_cat"]
                 global_cat_feat = self.global_cat_encoder(global_features_cat).sum(dim=-2)  # Summing embeddings
                 # [batch_size, hidden_dim] -> [batch_size, 1, hidden_dim] -> [batch_size, num_nodes, hidden_dim]
                 global_cat_feat = global_cat_feat.unsqueeze(1).repeat(1, n_node, 1)
                 all_features.append(global_cat_feat)
+                print("graphormer_layers, global_cat_feat:", global_cat_feat.size())
+                print(torch.cat(all_features, dim=-1).size())
 
             if self.global_cont_encoder is not None:
                 global_features_cont = batched_data["global_features_cont"]
@@ -108,14 +116,18 @@ class GraphNodeFeature(nn.Module):
                 # [batch_size, hidden_dim] -> [batch_size, 1, hidden_dim] -> [batch_size, num_nodes, hidden_dim]
                 global_cont_feat = global_cont_feat.unsqueeze(1).repeat(1, n_node, 1)
                 all_features.append(global_cont_feat)
+                print("graphormer_layers, global_cont_feat:", global_cont_feat.size())
+                print(torch.cat(all_features, dim=-1).size())
 
         # Concatenate all features and process through MLP
         # for f in all_features:
         #     print(f.shape)
         node_feature = torch.cat(all_features, dim=-1)
+        print("graphormer_layers, node feature shape:", node_feature.shape)
         node_feature = self.feature_mlp(node_feature)
 
         graph_token_feature = self.graph_token.weight.unsqueeze(0).repeat(n_graph, 1, 1)
+        print("graphormer_layers, mode", self.mode)
         if self.mode == "cls_only":
             graph_node_feature = torch.cat([graph_token_feature, node_feature], dim=1)
             return graph_node_feature
@@ -128,7 +140,28 @@ class GraphNodeFeature(nn.Module):
         elif self.mode == "cls_global_model":
             # Global node is now integrated via global_cat_encoder/global_cont_encoder
             # The CLS token (graph_token_feature) is concatenated with node_feature
-            global_token_feature = self.global_token.weight.unsqueeze(0).repeat(n_graph, 1, 1)
+            # Global token을 global_cat/cont 기반으로 생성
+            global_features = []
+            if self.global_cat_encoder is not None:
+                global_features_cat = batched_data["global_features_cat"]  # [B, F]
+                global_cat_feat = self.global_cat_encoder(global_features_cat).sum(dim=-2)  # [B, H]
+                global_features.append(global_cat_feat)
+
+            if self.global_cont_encoder is not None:
+                global_features_cont = batched_data["global_features_cont"]  # [B, F]
+                global_cont_feat = self.global_cont_encoder(global_features_cont)  # [B, H]
+                global_features.append(global_cont_feat)
+
+            if global_features:
+                # Combine global_cat + global_cont
+                combined_global_feat = sum(global_features)  # [B, H]
+            else:
+                # fallback: just use learnable embedding if no global feature
+                combined_global_feat = self.global_token.weight.squeeze(0).expand(n_graph, self.hidden_dim)
+
+            global_token_feature = combined_global_feat.unsqueeze(1)  # [B, 1, H]
+
+            # Concatenate: [CLS] + [GLOBAL] + [NODE]
             graph_node_feature = torch.cat([graph_token_feature, global_token_feature, node_feature], dim=1)
             return graph_node_feature
         else:
