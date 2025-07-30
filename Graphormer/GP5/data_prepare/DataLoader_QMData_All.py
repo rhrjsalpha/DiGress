@@ -306,11 +306,14 @@ class UnifiedSMILESDataset(Dataset):
         max_nodes: int = 128,
         multi_hop_max_dist: int = 5,
         target_type: str = "default",
+        intensity_normalize: str = "min_max", #
+        intensity_range: tuple = (200, 800),  #
         attn_bias_w: float = 0.0,
         ex_normalize: str = None,
         prob_normalize: str = None,
         nm_dist_mode: str = "hist",
         nm_gauss_sigma: float = 10.0,
+
     ):
         self.mode = mode
         self.is_global = mode in ("cls_global_data", "cls_global_model")
@@ -321,10 +324,16 @@ class UnifiedSMILESDataset(Dataset):
         self.target_type = target_type
         self.max_nodes = max_nodes
         self.multi_hop_max_dist = multi_hop_max_dist
+
+        # target_type ex_prob #
         self.ex_normalize = ex_normalize
         self.prob_normalize = prob_normalize
         self.nm_dist_mode = nm_dist_mode
         self.nm_gauss_sigma = nm_gauss_sigma
+
+        # target_type experiment #
+        self.intensity_normalize = intensity_normalize
+        self.intensity_range = intensity_range
 
         self.attn_bias_weight = attn_bias_w
 
@@ -333,6 +342,26 @@ class UnifiedSMILESDataset(Dataset):
 
         self._validate_columns(csv_file)
         self.data = self.data.loc[:, self._get_all_cols_to_load()]
+
+        # Stastics to Normalize ex_prob
+        if target_type in ["ex_prob", "nm_distribution"]:
+            ex_data = self.data[[f"ex{i}" for i in range(1, 51)]].values
+            prob_data = self.data[[f"prob{i}" for i in range(1, 51)]].values
+
+            self.global_ex_min = float(np.min(ex_data))
+            self.global_ex_max = float(np.max(ex_data))
+            self.global_ex_mean = float(np.mean(ex_data))
+            self.global_ex_std = float(np.std(ex_data))
+
+            self.global_prob_min = float(np.min(prob_data))
+            self.global_prob_max = float(np.max(prob_data))
+            self.global_prob_mean = float(np.mean(prob_data))
+            self.global_prob_std = float(np.std(prob_data))
+
+        else:
+            self.global_ex_min = self.global_ex_max = self.global_ex_mean = self.global_ex_std = None
+            self.global_prob_min = self.global_prob_max = self.global_prob_mean = self.global_prob_std = None
+
         self.targets = self.process_targets()
 
         self.raw_graphs = [g for g in [smiles2graph_customized(s, self.multi_hop_max_dist ,ATOM_FEATURES_VOCAB=ATOM_FEATURES_VOCAB, float_feature_keys=float_feature_keys, BOND_FEATURES_VOCAB=BOND_FEATURES_VOCAB) for s in self.data["smiles"]] if g is not None]
@@ -405,12 +434,25 @@ class UnifiedSMILESDataset(Dataset):
         }
 
     def _get_all_cols_to_load(self):
-        required_cols = ["smiles"] + [f"ex{i}" for i in range(1, 51)] + [f"prob{i}" for i in range(1, 51)]
+        if self.target_type in ["ex_prob", "nm_distribution"]:
+            target_cols = [f"ex{i}" for i in range(1, 51)] + [f"prob{i}" for i in range(1, 51)]
+        elif self.target_type == "exp_spectrum":
+            nm_min, nm_max = self.intensity_range  # 예: (200, 800)
+            all_columns = self.data.columns
+            target_cols = []
+            for i in range(nm_min, nm_max + 1):
+                target_cols.append(str(i))
+        else:
+            target_cols = []
+        required_cols = ["smiles"] + target_cols
+
         return required_cols + list(self.nominal_feature_vocab.keys()) + self.continuous_feature_names
 
     def _validate_columns(self, csv_file):
         for col in self._get_all_cols_to_load():
+            #print(self._get_all_cols_to_load())
             if col not in self.data.columns:
+                #print(self.data.columns)
                 raise ValueError(f"Missing required column '{col}' in {csv_file}")
 
     def process_targets(self, n_pairs=None):
@@ -425,13 +467,38 @@ class UnifiedSMILESDataset(Dataset):
                 n_pairs = max_pairs
             ex = arr[:, :max_pairs]
             prob = arr[:, max_pairs:]
+
+            # 1. intensity 기준 정렬
             sorted_idx = np.argsort(-prob, axis=1)
             top_idx = sorted_idx[:, :n_pairs]
             ex_top = np.take_along_axis(ex, top_idx, axis=1)
             prob_top = np.take_along_axis(prob, top_idx, axis=1)
+
+            # 2. eV 기준 정렬
             asc_idx = np.argsort(ex_top, axis=1)
             ex_top = np.take_along_axis(ex_top, asc_idx, axis=1)
             prob_top = np.take_along_axis(prob_top, asc_idx, axis=1)
+
+            # 4. ex 정규화
+            if self.ex_normalize == "ex_min_max":
+                ex_top = (ex_top - self.global_ex_min) / (self.global_ex_max - self.global_ex_min + 1e-8)
+            elif self.ex_normalize == "ex_std":
+                ex_top = (ex_top - self.global_ex_mean) / (self.global_ex_std + 1e-8)
+            elif self.ex_normalize == "none":
+                pass
+            else:
+                raise ValueError(f"Unknown ex_normalize: {self.ex_normalize}")
+
+            # 5. prob 정규화
+            if self.prob_normalize == "prob_min_max":
+                prob_top = (prob_top - self.global_prob_min) / (self.global_prob_max - self.global_prob_min + 1e-8)
+            elif self.prob_normalize == "prob_std":
+                prob_top = (prob_top - self.global_prob_mean) / (self.global_prob_std + 1e-8)
+            elif self.prob_normalize == "none":
+                pass
+            else:
+                raise ValueError(f"Unknown prob_normalize: {self.prob_normalize}")
+
             stacked = np.stack((ex_top, prob_top), axis=-1)
             return torch.tensor(stacked, dtype=torch.float32)
 
@@ -439,8 +506,14 @@ class UnifiedSMILESDataset(Dataset):
             ex = self.data[[f"ex{i}" for i in range(1, 51)]].values
             prob = self.data[[f"prob{i}" for i in range(1, 51)]].values
             nm = (1239.841984 / ex).round().astype(int)
-            nm = np.clip(nm, 150, 600)
-            out = np.zeros((len(self.data), 451), dtype=np.float32)
+
+            if self.intensity_normalize == "min_max":
+                prob = (prob - self.global_prob_min) / (self.global_prob_max - self.global_prob_min + 1e-8)
+
+            nm_min, nm_max = self.intensity_range
+            nm = np.clip(nm, nm_min, nm_max)
+            spec_len = nm_max - nm_min + 1
+            out = np.zeros((len(self.data), spec_len), dtype=np.float32)
 
             if self.nm_dist_mode == "hist":
                 for i, (row_nm, row_p) in enumerate(zip(nm, prob)):
@@ -462,6 +535,40 @@ class UnifiedSMILESDataset(Dataset):
             else:
                 raise ValueError(f"Unknown nm_dist_mode: {self.nm_dist_mode}, use 'hist' or 'gauss'")
             return torch.tensor(out, dtype=torch.float32)
+
+        elif self.target_type == "exp_spectrum":
+            nm_min, nm_max = self.intensity_range
+            target_cols = [str(i) for i in range(nm_min, nm_max + 1)]
+
+            # 존재하는 컬럼만 선택
+            existing_cols = [col for col in target_cols if col in self.data.columns]
+            missing_cols = set(target_cols) - set(existing_cols)
+            if missing_cols:
+                print(f"[Warning] {len(missing_cols)} missing columns will be filled with zeros")
+
+            # 누락된 컬럼 0으로 채워 넣기
+            for col in missing_cols:
+                self.data[col] = 0.0
+
+            spectrum = self.data[target_cols].fillna(0.0).values
+
+            # 개별 스펙트럼별 정규화
+            normed = []
+            for row in spectrum:
+                mask = (row != 0)
+                if np.sum(mask) == 0:
+                    normed.append(np.zeros_like(row))
+                else:
+                    valid_vals = row[mask]
+                    row_min, row_max = np.min(valid_vals), np.max(valid_vals)
+                    row_range = row_max - row_min + 1e-8
+                    norm_row = np.zeros_like(row)
+                    norm_row[mask] = (valid_vals - row_min) / row_range
+                    normed.append(norm_row)
+
+            spectrum = np.stack(normed)
+            return torch.tensor(spectrum, dtype=torch.float32)
+
         else:
             raise ValueError(f"Unknown target_type: {self.target_type}")
 
@@ -730,18 +837,25 @@ def run_pipeline(args):
 
 from types import SimpleNamespace
 if __name__ == "__main__":
+    file_path_1 = r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\graphormer_data\train_50_with_features.csv"
+    file_path_2 = r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\fake_exp_like_data_from_QM9Snm_1nm_last_withGlobalFeature_100data.csv"
+    #df = pd.read_csv(file_path_2)
+    #df[0:100].to_csv("fake_exp_like_data_from_QM9Snm_1nm_last_withGlobalFeature_100data.csv")
+    #print(df.head())
     if len(sys.argv) == 1:
         args = SimpleNamespace(
-            train_file=r"C:\Users\analcheminfo\PycharmProjects\DiGress\Graphormer\graphormer_data\train_50_with_features.csv",
+            train_file= file_path_2,
             mode="cls_global_data",
-            target_type="nm_distribution",
+            target_type="exp_spectrum", # nm_distribution, ex_prob, exp_spectrum
             ex_norm="none",
             prob_norm="none",
             nm_dist_mode="hist",
             nm_gauss_sigma=10.0,
-            batch_size=4,
+            batch_size=10,
             max_nodes=128,
-            multi_hop_max_dist=5
+            multi_hop_max_dist=5,
+            nominal_feature_vocab=PREDEFINED_VOCAB,
+            continuous_feature_names=['pressure_atm', 'temperature_K'],
         )
     else:
         args = build_parser().parse_args()
