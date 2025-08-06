@@ -59,9 +59,15 @@ def train_model_ex_porb(
     n_pairs: int = 50,
     learning_rate: float = 1e-3,
     dataset_path: str,
+    test_dataset_path: str,
     DATASET=None,
+    TEST_VAL_DATASET=None,
     alpha: float = 0.12,
     is_cv: bool = False,
+    nominal_feature_vocab=None,
+    continuous_feature_names=None,
+    global_cat_dim=0,
+    global_cont_dim=0,
     global_feature_names: List[str] | None = None,
     ex_normalize: str = "ex",
     prob_normalize: str = "prob",
@@ -82,7 +88,7 @@ def train_model_ex_porb(
     if DATASET is None:
         dataset = UnifiedSMILESDataset(
             csv_file=dataset_path,
-            nominal_feature_vocab=nominal_dims,
+            nominal_feature_vocab=nominal_feature_vocab,
             continuous_feature_names=continuous_feature_names,
             global_cat_dim=global_cat_dim,
             global_cont_dim=global_cont_dim,
@@ -252,6 +258,57 @@ def train_model_ex_porb(
 
     # ---------------- 인‑샘플 평가 ----------------
     model.load_state_dict(torch.load(best_model_path))
+    results = {}
+    results.update(evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, sid_loss, is_cv=is_cv, best_epoch=best_epoch))
+
+    if TEST_VAL_DATASET is None:
+        dataset_test = UnifiedSMILESDataset(
+            csv_file=test_dataset_path,
+            nominal_feature_vocab=nominal_feature_vocab,
+            continuous_feature_names=continuous_feature_names,
+            global_cat_dim=global_cat_dim,
+            global_cont_dim=global_cont_dim,
+            ATOM_FEATURES_VOCAB=config["ATOM_FEATURES_VOCAB"],
+            float_feature_keys=config["float_feature_keys"],
+            BOND_FEATURES_VOCAB=config["BOND_FEATURES_VOCAB"],
+            mode=config["mode"],  # "cls", "cls+global_data", "cls+global_model"
+            max_nodes=config.get("max_nodes", 128),
+            multi_hop_max_dist=config.get("multi_hop_max_dist", 5),
+            target_type=config.get("target_type", "default"),
+            attn_bias_w=config.get("attn_bias_w", 1.0),
+            ex_normalize=config.get("ex_normalize", None),
+            prob_normalize=config.get("prob_normalize", None),
+            nm_dist_mode=config.get("nm_dist_mode", "hist"),
+            nm_gauss_sigma=config.get("nm_gauss_sigma", 10.0),
+        )
+
+        print("dataset.mode ,dataset.graphs[0]", dataset.mode, )
+
+        example_graph = dataset.graphs[0]
+        has_global_cat = "global_features_cat" in example_graph
+        has_global_cont = "global_features_cont" in example_graph
+
+        print("Graph 내부에 global_features_cat 있음:", has_global_cat)
+        print("Graph 내부에 global_features_cont 있음:", has_global_cont)
+    else:
+        dataset_test = TEST_VAL_DATASET
+
+    dataloader_test = DataLoader(
+        dataset_test,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs),
+    )
+
+    results.update(evaluate_model_metrics(model, dataloader_test, target_type, device, soft_dtw_fn, sid_loss, is_cv=is_cv, best_epoch=best_epoch))
+
+
+    for k, v in history.items():
+        results[f"{k}_history"] = v
+
+    return results, best_model_path
+
+def evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, sid_loss, is_cv=False, best_epoch=None):
     model.eval()
 
     # 스펙트럼별 결과 저장용 리스트 초기화
@@ -264,21 +321,18 @@ def train_model_ex_porb(
     softdtw_spectrum_ex, softdtw_spectrum_prob, softdtw_spectrum_combined = [], [], []
     fastdtw_spectrum_ex, fastdtw_spectrum_prob, fastdtw_spectrum_combined = [], [], []
 
-    y_true_prob_nan_cases = []
-    y_pred_prob_nan_cases = []
-
     with torch.no_grad():
         for batch in dataloader:
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
             all_keys = batch.keys()
             batched_data = {k: batch[k] for k in all_keys if k != "targets"}
-            #batched_data = {k: batch[k] for k in
+            # batched_data = {k: batch[k] for k in
             #                ["x_cat", "x_cont", "adj", "in_degree", "out_degree", "spatial_pos", "attn_bias", "edge_input",
             #                 "attn_edge_type"]}
 
             targets = batch["targets"]
             outputs = model(batched_data, targets=targets, target_type=target_type)
-            #outputs = torch.clamp(outputs, min=1e-8)
+            # outputs = torch.clamp(outputs, min=1e-8)
 
             sid_spectrum_ex, sid_spectrum_prob, sid_spectrum_combined = [], [], []
 
@@ -287,9 +341,9 @@ def train_model_ex_porb(
             # Batch에서 각 스펙트럼별로 계산
             for i in range(targets.size(0)):  # batch_size 만큼 루프
                 y_true = targets[i].cpu().numpy()
-                #print("y_true.shape)",y_true.shape)
+                # print("y_true.shape)",y_true.shape)
                 y_pred = outputs[i].cpu().detach().numpy()
-                #print("y_pred.shape",y_pred.shape)
+                # print("y_pred.shape",y_pred.shape)
                 if target_type == "ex_prob":
                     # 2D 인덱싱이 필요한 경우 (배치 크기 x n_pairs x 2)
                     y_true_ex = y_true[:, 0]  # ex 값들
@@ -303,8 +357,8 @@ def train_model_ex_porb(
 
                 # SID 및 SIS 계산
 
-                #print("sid shape",torch.tensor(y_pred_ex).unsqueeze(0).to(device).shape, torch.tensor(y_true_ex).unsqueeze(0).to(device).shape)
-                #print(torch.ones_like(torch.tensor(y_pred_ex).unsqueeze(0), dtype=torch.bool).to(device).shape)
+                # print("sid shape",torch.tensor(y_pred_ex).unsqueeze(0).to(device).shape, torch.tensor(y_true_ex).unsqueeze(0).to(device).shape)
+                # print(torch.ones_like(torch.tensor(y_pred_ex).unsqueeze(0), dtype=torch.bool).to(device).shape)
                 sid_ex = sid_loss(torch.tensor(y_pred_ex).unsqueeze(0).to(device),
                                   torch.tensor(y_true_ex).unsqueeze(0).to(device),
                                   torch.ones_like(torch.tensor(y_pred_ex).unsqueeze(0), dtype=torch.bool).to(
@@ -322,7 +376,6 @@ def train_model_ex_porb(
                                             device),
                                         threshold=1e-8).mean().item()
 
-
                 # 스펙트럼별 계산 결과 저장
                 r2_ex = r2_score(y_true_ex, y_pred_ex)
                 r2_prob = r2_score(y_true_prob, y_pred_prob)
@@ -336,7 +389,7 @@ def train_model_ex_porb(
                 rmse_prob = mean_squared_error(y_true_prob, y_pred_prob, squared=False)
                 rmse_combined = mean_squared_error(y_true.flatten(), y_pred.flatten(), squared=False)
 
-                #print("softdtw_ex = SoftDTWLoss",torch.tensor(y_pred).unsqueeze(0).unsqueeze(-1).shape)
+                # print("softdtw_ex = SoftDTWLoss",torch.tensor(y_pred).unsqueeze(0).unsqueeze(-1).shape)
                 softdtw_ex = soft_dtw_fn(
                     torch.tensor(y_pred_ex).unsqueeze(0).unsqueeze(-1).to(device),
                     # (batch_size=1, seq_len, dimension=1)
@@ -356,7 +409,7 @@ def train_model_ex_porb(
                 fastdtw_prob, _ = fastdtw(torch.tensor(y_pred_prob), torch.tensor(y_true_prob))
                 fastdtw_combined, _ = fastdtw(torch.tensor(y_pred.flatten()), torch.tensor(y_true.flatten()))
 
-                    # NaN 체크 및 제외 # Nan 아닌 경우 SIS 계산
+                # NaN 체크 및 제외 # Nan 아닌 경우 SIS 계산
 
                 if not math.isnan(sid_ex):
                     sid_spectrum_ex.append(sid_ex)
@@ -378,7 +431,6 @@ def train_model_ex_porb(
                 else:
                     nan_case_combined += 1
                     print(f"[SID_combined] NaN detected at case {i}")
-
 
                 sis_spectrum_ex.append(sis_ex)
                 sis_spectrum_prob.append(sis_prob)
@@ -439,37 +491,37 @@ def train_model_ex_porb(
     print("SID prob 평균 (NaN 제외):", sid_avg_prob, "NaN 개수:", nan_case_prob)
     print("SID combined 평균 (NaN 제외):", sid_avg_combined, "NaN 개수:", nan_case_combined)
     # 결과 저장용 딕셔너리 생성
+    if is_cv == True:
+        column_header_front_train = "CV_train"
+        column_header_front_test = "CV_val"
+    else:
+        column_header_front_train = "train"
+        column_header_front_test = "test"
 
-    results.update({
-        "best_epoch": best_epoch,
-        "r2_avg_ex": r2_avg_ex,
-        "r2_avg_prob": r2_avg_prob,
-        "r2_avg_combined": r2_avg_combined,
-        "mae_avg_ex": mae_avg_ex,
-        "mae_avg_prob": mae_avg_prob,
-        "mae_avg_combined": mae_avg_combined,
-        "rmse_avg_ex": rmse_avg_ex,
-        "rmse_avg_prob": rmse_avg_prob,
-        "rmse_avg_combined": rmse_avg_combined,
-        "softdtw_avg_ex": softdtw_avg_ex,
-        "softdtw_avg_prob": softdtw_avg_prob,
-        "softdtw_avg_combined": softdtw_avg_combined,
-        "fastdtw_avg_ex": fastdtw_avg_ex,
-        "fastdtw_avg_prob": fastdtw_avg_prob,
-        "fastdtw_avg_combined": fastdtw_avg_combined,
-        "sid_avg_ex": sid_avg_ex,
-        "sid_avg_prob": sid_avg_prob,
-        "sid_avg_combined": sid_avg_combined,
-        "sis_avg_ex": sis_avg_ex,
-        "sis_avg_prob": sis_avg_prob,
-        "sis_avg_combined": sis_avg_combined,
-    })
-
-    for k, v in history.items():
-        results[f"{k}_history"] = v
-
-    return results, best_model_path
-
+    return {
+        f"best_epoch_{column_header_front_train}": best_epoch,
+        f"r2_avg_ex_{column_header_front_train}": r2_avg_ex,
+        f"r2_avg_prob_{column_header_front_train}": r2_avg_prob,
+        f"r2_avg_combined_{column_header_front_train}": r2_avg_combined,
+        f"mae_avg_ex_{column_header_front_train}": mae_avg_ex,
+        f"mae_avg_prob_{column_header_front_train}": mae_avg_prob,
+        f"mae_avg_combined_{column_header_front_train}": mae_avg_combined,
+        f"rmse_avg_ex_{column_header_front_train}": rmse_avg_ex,
+        f"rmse_avg_prob_{column_header_front_train}": rmse_avg_prob,
+        f"rmse_avg_combined_{column_header_front_train}": rmse_avg_combined,
+        f"softdtw_avg_ex_{column_header_front_train}": softdtw_avg_ex,
+        f"softdtw_avg_prob_{column_header_front_train}": softdtw_avg_prob,
+        f"softdtw_avg_combined_{column_header_front_train}": softdtw_avg_combined,
+        f"fastdtw_avg_ex_{column_header_front_train}": fastdtw_avg_ex,
+        f"fastdtw_avg_prob_{column_header_front_train}": fastdtw_avg_prob,
+        f"fastdtw_avg_combined_{column_header_front_train}": fastdtw_avg_combined,
+        f"sid_avg_ex_{column_header_front_train}": sid_avg_ex,
+        f"sid_avg_prob_{column_header_front_train}": sid_avg_prob,
+        f"sid_avg_combined_{column_header_front_train}": sid_avg_combined,
+        f"sis_avg_ex_{column_header_front_train}": sis_avg_ex,
+        f"sis_avg_prob_{column_header_front_train}": sis_avg_prob,
+        f"sis_avg_combined_{column_header_front_train}": sis_avg_combined,
+    }
 
 # -----------------------------------------------------------------------------
 # 메인 진입점
@@ -526,12 +578,12 @@ def main() -> None:
     print("CUDA available:", torch.cuda.is_available())
 
     # ---------- 글로벌 피처 정보 ----------
-    global nominal_dims, continuous_feature_names, global_cat_dim, global_cont_dim
+    #global nominal_dims, continuous_feature_names, global_cat_dim, global_cont_dim
     global device
 
     GLOBAL_FEATURE_NAMES = ['Solvent', 'Temperature', 'Pressure']
-    dataset_train = "../../graphormer_data/train_50_with_features.csv"
-
+    dataset_train_path = "../../graphormer_data/train_50_with_features.csv"
+    dataset_test_path = "../../graphormer_data/train_50_with_features.csv"
     try:
         nominal_dims, continuous_feature_names, global_cat_dim, global_cont_dim = get_global_feature_info(GLOBAL_FEATURE_NAMES, PREDEFINED_VOCAB)
         print(nominal_dims)
@@ -544,8 +596,8 @@ def main() -> None:
         global_cat_dim, global_cont_dim = 1, 2
 
     # device (GPU/CPU) 설정 전역 변수화
-    #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #device = torch.device("cpu")
     # ---------- Graphormer config ----------
     config: Dict = {
         "num_atoms": 100,
@@ -608,7 +660,8 @@ def main() -> None:
             num_epochs=10,
             batch_size=50,
             n_pairs=50,
-            dataset_path=dataset_train,
+            dataset_path=dataset_train_path,
+            test_dataset_path=dataset_test_path,
             alpha=0.12,
             global_feature_names=GLOBAL_FEATURE_NAMES,
             ex_normalize="ex_min_max",
@@ -621,6 +674,8 @@ def main() -> None:
         # 중간 저장
         pd.DataFrame(results_all).to_csv("training_results_intermediate.csv", index=False)
         print(f"[SAVE] intermediate results → training_results_intermediate.csv")
+
+
 
     # ---------- 최종 결과 저장 ----------
     out_csv = "training_results.csv"
