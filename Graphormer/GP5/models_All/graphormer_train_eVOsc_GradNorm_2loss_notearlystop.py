@@ -177,6 +177,7 @@ def train_model_ex_porb(
         norm_ex_list, norm_prob_list = [], []
 
         for batch in dataloader:
+            ### 해야 하는 것 : Traget type에 따라서 다르게 처리 되도록 하기 ###
             batch_data = {k: v.to(device) for k, v in batch.items() if k != "targets"}
             targets = batch["targets"].to(device)
 
@@ -257,9 +258,11 @@ def train_model_ex_porb(
             torch.save(model.state_dict(), best_model_path)
 
     # ---------------- 인‑샘플 평가 ----------------
+    config["out_of_training"] = True
+    model = GraphormerModel(config).to(device)
     model.load_state_dict(torch.load(best_model_path))
     results = {}
-    results.update(evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, sid_loss, is_cv=is_cv, best_epoch=best_epoch))
+    results.update(evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, sid_loss, is_cv=is_cv, best_epoch=best_epoch, is_val=False))
 
     if TEST_VAL_DATASET is None:
         dataset_test = UnifiedSMILESDataset(
@@ -300,7 +303,7 @@ def train_model_ex_porb(
         collate_fn=lambda batch: collate_fn(batch, dataset, n_pairs=n_pairs),
     )
 
-    results.update(evaluate_model_metrics(model, dataloader_test, target_type, device, soft_dtw_fn, sid_loss, is_cv=is_cv, best_epoch=best_epoch))
+    results.update(evaluate_model_metrics(model, dataloader_test, target_type, device, soft_dtw_fn, sid_loss, is_cv=is_cv, best_epoch=best_epoch, is_val=True))
 
 
     for k, v in history.items():
@@ -308,7 +311,8 @@ def train_model_ex_porb(
 
     return results, best_model_path
 
-def evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, sid_loss, is_cv=False, best_epoch=None):
+### 여러 Target type에 맞추어 나중에 바꾸기 ###
+def evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, sid_loss, is_cv=False, best_epoch=None, is_val=False):
     model.eval()
 
     # 스펙트럼별 결과 저장용 리스트 초기화
@@ -350,7 +354,6 @@ def evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, 
                     y_pred_ex = y_pred[:, 0]  # 예측된 ex 값들
                     y_true_prob = y_true[:, 1]  # prob 값들
                     y_pred_prob = y_pred[:, 1]  # 예측된 prob 값들
-
 
                 else:
                     raise ValueError(f"Unknown target_type: {target_type}")
@@ -431,8 +434,10 @@ def evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, 
                 else:
                     nan_case_combined += 1
                     print(f"[SID_combined] NaN detected at case {i}")
-
-                sis_spectrum_ex.append(sis_ex)
+                try:
+                    sis_spectrum_ex.append(sis_ex)
+                except UnboundLocalError:
+                    print(sis_ex)
                 sis_spectrum_prob.append(sis_prob)
                 sis_spectrum_combined.append(sis_combined)
 
@@ -491,36 +496,40 @@ def evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, 
     print("SID prob 평균 (NaN 제외):", sid_avg_prob, "NaN 개수:", nan_case_prob)
     print("SID combined 평균 (NaN 제외):", sid_avg_combined, "NaN 개수:", nan_case_combined)
     # 결과 저장용 딕셔너리 생성
-    if is_cv == True:
-        column_header_front_train = "CV_train"
-        column_header_front_test = "CV_val"
+    if is_cv == True and is_val == False:
+        column_header_front = "CV_train"
+    elif is_cv == True and is_val == True:
+        column_header_front = "CV_val"
+    elif is_cv == False and is_val == False:
+        column_header_front = "train"
+    elif is_cv == False and is_val == True:
+        column_header_front = "test"
     else:
-        column_header_front_train = "train"
-        column_header_front_test = "test"
+        column_header_front = "Unknown"
 
     return {
-        f"best_epoch_{column_header_front_train}": best_epoch,
-        f"r2_avg_ex_{column_header_front_train}": r2_avg_ex,
-        f"r2_avg_prob_{column_header_front_train}": r2_avg_prob,
-        f"r2_avg_combined_{column_header_front_train}": r2_avg_combined,
-        f"mae_avg_ex_{column_header_front_train}": mae_avg_ex,
-        f"mae_avg_prob_{column_header_front_train}": mae_avg_prob,
-        f"mae_avg_combined_{column_header_front_train}": mae_avg_combined,
-        f"rmse_avg_ex_{column_header_front_train}": rmse_avg_ex,
-        f"rmse_avg_prob_{column_header_front_train}": rmse_avg_prob,
-        f"rmse_avg_combined_{column_header_front_train}": rmse_avg_combined,
-        f"softdtw_avg_ex_{column_header_front_train}": softdtw_avg_ex,
-        f"softdtw_avg_prob_{column_header_front_train}": softdtw_avg_prob,
-        f"softdtw_avg_combined_{column_header_front_train}": softdtw_avg_combined,
-        f"fastdtw_avg_ex_{column_header_front_train}": fastdtw_avg_ex,
-        f"fastdtw_avg_prob_{column_header_front_train}": fastdtw_avg_prob,
-        f"fastdtw_avg_combined_{column_header_front_train}": fastdtw_avg_combined,
-        f"sid_avg_ex_{column_header_front_train}": sid_avg_ex,
-        f"sid_avg_prob_{column_header_front_train}": sid_avg_prob,
-        f"sid_avg_combined_{column_header_front_train}": sid_avg_combined,
-        f"sis_avg_ex_{column_header_front_train}": sis_avg_ex,
-        f"sis_avg_prob_{column_header_front_train}": sis_avg_prob,
-        f"sis_avg_combined_{column_header_front_train}": sis_avg_combined,
+        f"best_epoch_{column_header_front}": best_epoch,
+        f"r2_avg_ex_{column_header_front}": r2_avg_ex,
+        f"r2_avg_prob_{column_header_front}": r2_avg_prob,
+        f"r2_avg_combined_{column_header_front}": r2_avg_combined,
+        f"mae_avg_ex_{column_header_front}": mae_avg_ex,
+        f"mae_avg_prob_{column_header_front}": mae_avg_prob,
+        f"mae_avg_combined_{column_header_front}": mae_avg_combined,
+        f"rmse_avg_ex_{column_header_front}": rmse_avg_ex,
+        f"rmse_avg_prob_{column_header_front}": rmse_avg_prob,
+        f"rmse_avg_combined_{column_header_front}": rmse_avg_combined,
+        f"softdtw_avg_ex_{column_header_front}": softdtw_avg_ex,
+        f"softdtw_avg_prob_{column_header_front}": softdtw_avg_prob,
+        f"softdtw_avg_combined_{column_header_front}": softdtw_avg_combined,
+        f"fastdtw_avg_ex_{column_header_front}": fastdtw_avg_ex,
+        f"fastdtw_avg_prob_{column_header_front}": fastdtw_avg_prob,
+        f"fastdtw_avg_combined_{column_header_front}": fastdtw_avg_combined,
+        f"sid_avg_ex_{column_header_front}": sid_avg_ex,
+        f"sid_avg_prob_{column_header_front}": sid_avg_prob,
+        f"sid_avg_combined_{column_header_front}": sid_avg_combined,
+        f"sis_avg_ex_{column_header_front}": sis_avg_ex,
+        f"sis_avg_prob_{column_header_front}": sis_avg_prob,
+        f"sis_avg_combined_{column_header_front}": sis_avg_combined,
     }
 
 # -----------------------------------------------------------------------------

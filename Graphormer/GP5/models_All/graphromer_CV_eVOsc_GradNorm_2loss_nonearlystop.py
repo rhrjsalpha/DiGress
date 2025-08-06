@@ -182,27 +182,9 @@ def run_cv_and_final_training(
     res_final["best_model_path"] = best_path
     all_results.append(res_final)
 
-    # test set 평가
-    if test_csv_path:
-        print("\n=== Final Evaluation on Test Set ===")
-        test_dataset = UnifiedSMILESDataset(
-            csv_file=test_csv_path,
-            nominal_feature_vocab=nominal_dims,
-            continuous_feature_names=continuous_feature_names,
-            global_cat_dim=config["global_cat_dim"],
-            global_cont_dim=config["global_cont_dim"],
-            ATOM_FEATURES_VOCAB=config["ATOM_FEATURES_VOCAB"],
-            float_feature_keys=config["float_feature_keys"],
-            BOND_FEATURES_VOCAB=config["BOND_FEATURES_VOCAB"],
-            mode=config["mode"],
-            target_type=config["target_type"],
-            ex_normalize=config.get("ex_normalize", None),
-            prob_normalize=config.get("prob_normalize", None),
-        )
-
-        model = GraphormerModel(config)
-        model.load_state_dict(torch.load(best_path, map_location="cpu"))
-        model.eval()
+    model = GraphormerModel(config)
+    model.load_state_dict(torch.load(best_path, map_location="cpu"))
+    model.eval()
 
         # 평가 함수 따로 정의 가능
         # res_test = evaluate_model_on_test(model, test_dataset)
@@ -360,8 +342,8 @@ def main() -> None:
     )
 
     # ---------- 최종 결과 저장 ----------
-    out_csv = "training_results.csv"
-    pd.DataFrame(results_all).to_csv(out_csv, index=False)
-    print("\nAll trainings finished. Saved ⇒", out_csv)
+    #out_csv = "training_results.csv"
+    #pd.DataFrame(results_all).to_csv(out_csv, index=False)
+    print("\nAll trainings finished. Saved ⇒")
 
 main()
