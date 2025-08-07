@@ -106,6 +106,8 @@ class GraphormerModel(nn.Module):
                     output_size = targets.size(1) * 2  # Number of pairs * 2 ([ex, prob] pairs)
                 elif target_type == "nm_distribution":
                     output_size = targets.size(-1)  # Distribution size (e.g., 801)
+                elif target_type == "exp_spectrum":
+                    output_size = targets.size(-1)
                 else:
                     raise ValueError(f"Unknown target_type: {target_type}")
 

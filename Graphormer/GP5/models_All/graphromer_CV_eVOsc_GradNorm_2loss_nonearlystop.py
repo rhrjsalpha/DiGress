@@ -288,15 +288,16 @@ def main() -> None:
         "output_size": 100,
         "num_categorical_features": 7,  # (= 7 atom categorical)
         "num_continuous_features": 2,  # (= 2 atom continuous)
-        "mode": "cls_global_data", # "cls_only" , "cls_global_data", "cls_global_model"
+        "mode": "cls_global_model", # "cls_only" , "cls_global_data", "cls_global_model"
         "target_type": "ex_prob", # "default", "ex_prob", "nm_distribution"
     }
     config.update({
         "ATOM_FEATURES_VOCAB": ATOM_FEATURES_VOCAB,
         "float_feature_keys": float_feature_keys,
         "BOND_FEATURES_VOCAB": BOND_FEATURES_VOCAB,
-        "ex_normalize": "ex_min_max",
-        "prob_normalize": "prob_min_max",
+        "ex_normalize": "ex_min_max", #  ex_std, ex_min_max, none(문자열)
+        "prob_normalize": "prob_min_max", # prob_std, prob_min_max, none 문자열
+        "nm_dist_mode": "hist",  # 가능 값: "hist" | "gauss" | "exp"
     })
     if config.get("mode") == "cls_global_data" or config.get("mode") == "cls_global_model":
         config.update({

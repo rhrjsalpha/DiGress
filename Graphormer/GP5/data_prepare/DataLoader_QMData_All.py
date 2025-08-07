@@ -11,6 +11,7 @@ from rdkit import Chem
 from rdkit.Chem.rdchem import Atom
 from rdkit.Chem import AllChem
 import io
+from rdkit.Chem.MolStandardize import rdMolStandardize
 
 PREDEFINED_VOCAB = {
     'Solvent': [
@@ -79,8 +80,13 @@ def smiles2graph_customized(
     if mol is None:
         return None
 
-    # 혹시 혼합물 있을 경우 배제
-    if len(Chem.GetMolFrags(mol)) > 1:
+    # 혹시 혼합물 있을 경우 염 제거 시도후 안되면 배제
+    try:
+        if len(Chem.GetMolFrags(mol)) > 1:
+            lfc = rdMolStandardize.LargestFragmentChooser()
+            mol = lfc.choose(mol)
+    except Exception as e:
+        print(f"[Fragment Clean Failed] {smiles} → {e}")
         return None
 
     # 부분 전하 계산
@@ -358,18 +364,56 @@ class UnifiedSMILESDataset(Dataset):
             self.global_prob_mean = float(np.mean(prob_data))
             self.global_prob_std = float(np.std(prob_data))
 
+        elif self.target_type == "exp_spectrum":
+            nm_min, nm_max = self.intensity_range
+            target_cols = [str(i) for i in range(nm_min, nm_max + 1)]
+            existing_cols = [col for col in target_cols if col in self.data.columns]
+            missing_cols = set(target_cols) - set(existing_cols)
+            for col in missing_cols:
+                self.data[col] = 0.0
+
         else:
             self.global_ex_min = self.global_ex_max = self.global_ex_mean = self.global_ex_std = None
             self.global_prob_min = self.global_prob_max = self.global_prob_mean = self.global_prob_std = None
 
-        self.targets = self.process_targets()
+        #self.raw_graphs = [g for g in [smiles2graph_customized(s, self.multi_hop_max_dist ,ATOM_FEATURES_VOCAB=ATOM_FEATURES_VOCAB, float_feature_keys=float_feature_keys, BOND_FEATURES_VOCAB=BOND_FEATURES_VOCAB) for s in self.data["smiles"]] if g is not None]
 
-        self.raw_graphs = [g for g in [smiles2graph_customized(s, self.multi_hop_max_dist ,ATOM_FEATURES_VOCAB=ATOM_FEATURES_VOCAB, float_feature_keys=float_feature_keys, BOND_FEATURES_VOCAB=BOND_FEATURES_VOCAB) for s in self.data["smiles"]] if g is not None]
+        # 1. targets, mask 분리
+        if self.target_type == "exp_spectrum":
+            spectrum, mask_tensor = self.process_targets()
+        else:
+            spectrum = self.process_targets()
+            mask_tensor = None
+
+        # 2. 유효 SMILES 기준으로 graph 추출
+        self.raw_graphs = []
+        valid_indices = []
+
+        for i, s in enumerate(self.data["smiles"]):
+            g = smiles2graph_customized(
+                s,
+                self.multi_hop_max_dist,
+                ATOM_FEATURES_VOCAB=ATOM_FEATURES_VOCAB,
+                float_feature_keys=float_feature_keys,
+                BOND_FEATURES_VOCAB=BOND_FEATURES_VOCAB
+            )
+            if g is not None:
+                self.raw_graphs.append(g)
+                valid_indices.append(i)
+
+        # 3. 대상 필터링
+        self.targets = spectrum[valid_indices]
+        if mask_tensor is not None:
+            self.masks = mask_tensor[valid_indices]  # ← 필요 시 사용
+
+        self.data = self.data.iloc[valid_indices].reset_index(drop=True)
+
         self.graphs = [self._preprocess_graph_with_optional_global(i, g, ATOM_FEATURES_VOCAB, float_feature_keys, BOND_FEATURES_VOCAB, ) for i, g in enumerate(self.raw_graphs)]
         for g in self.graphs:
             print("",g.keys())
 
     def __getitem__(self, idx):
+        #print("idx", idx)
         tgt = self.targets[idx]
 
         # --- Always prepare global features (in case model-internal needs it) ---
@@ -554,6 +598,7 @@ class UnifiedSMILESDataset(Dataset):
 
             # 개별 스펙트럼별 정규화
             normed = []
+            masks = []
             for row in spectrum:
                 mask = (row != 0)
                 if np.sum(mask) == 0:
@@ -566,8 +611,12 @@ class UnifiedSMILESDataset(Dataset):
                     norm_row[mask] = (valid_vals - row_min) / row_range
                     normed.append(norm_row)
 
+                masks.append(mask.astype(np.float32))
+
             spectrum = np.stack(normed)
-            return torch.tensor(spectrum, dtype=torch.float32)
+            spectrum = torch.tensor(spectrum, dtype=torch.float32)
+            mask_tensor = torch.tensor(np.stack(masks), dtype=torch.float32)  # 또는 dtype=torch.bool
+            return spectrum, mask_tensor
 
         else:
             raise ValueError(f"Unknown target_type: {self.target_type}")
@@ -722,6 +771,9 @@ def collate_fn(batch, ds, n_pairs=None, min_max=None):
         "targets": torch.stack([ds.targets[i] for i in tgt_idx])
     }
 
+    if ds.target_type == "exp_spectrum":
+        res.update({"masks":ds.masks})
+
     # ─────────────────────────────────────
     # Global Feature 모드일 경우만 추가
     if ds.mode in ["cls_global_data", "cls_global_model"]:
@@ -822,8 +874,11 @@ def run_pipeline(args):
         ATOM_FEATURES_VOCAB = ATOM_FEATURES_VOCAB,
         float_feature_keys = float_feature_keys,
         BOND_FEATURES_VOCAB = BOND_FEATURES_VOCAB,
-
+        intensity_normalize =  args.intensity_normalize,  #
+        intensity_range =  args.intensity_range,  #
+        attn_bias_w = args.attn_bias_w,
     )
+
 
     dl = torch.utils.data.DataLoader(
         ds, batch_size=args.batch_size, shuffle=True,
@@ -839,12 +894,13 @@ from types import SimpleNamespace
 if __name__ == "__main__":
     file_path_1 = r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\graphormer_data\train_50_with_features.csv"
     file_path_2 = r"C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\data_prepare\fake_exp_like_data_from_QM9Snm_1nm_last_withGlobalFeature_100data.csv"
+    file_paht_exp = r"C:\Users\analcheminfo\PycharmProjects\DiGress\Graphormer\graphormer_data\NIST_with_fake_golbal.csv"
     #df = pd.read_csv(file_path_2)
     #df[0:100].to_csv("fake_exp_like_data_from_QM9Snm_1nm_last_withGlobalFeature_100data.csv")
     #print(df.head())
     if len(sys.argv) == 1:
         args = SimpleNamespace(
-            train_file= file_path_2,
+            train_file= file_paht_exp,
             mode="cls_global_data",
             target_type="exp_spectrum", # nm_distribution, ex_prob, exp_spectrum
             ex_norm="none",
@@ -856,9 +912,13 @@ if __name__ == "__main__":
             multi_hop_max_dist=5,
             nominal_feature_vocab=PREDEFINED_VOCAB,
             continuous_feature_names=['pressure_atm', 'temperature_K'],
+            intensity_normalize="min_max",  #
+            intensity_range=(1, 10),  #
+            attn_bias_w=0.0,
         )
     else:
         args = build_parser().parse_args()
 
     run_pipeline(args)
+
 
