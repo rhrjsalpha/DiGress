@@ -332,6 +332,7 @@ def train_model_ex_porb(
                     history[history_key_loss] = []
                 history[history_key_loss].append(avg_loss)
 
+
                 if history_key_norm not in history:
                     history[history_key_norm] = []
                 history[history_key_norm].append(avg_norm)
