@@ -27,6 +27,7 @@ class GradNorm:
         """
         #device = self.lambdas.device
         #print("device",device)
+        print("losses",losses)
         if isinstance(losses, list):
             losses = torch.stack(losses)
 
@@ -34,9 +35,10 @@ class GradNorm:
         grads = []
         for loss in losses:
             grad = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=False,
-                                       allow_unused=True)
+                                       allow_unused=True,)
             grad_norm = torch.norm(torch.stack([g.norm() for g in grad if g is not None]))
             grads.append(grad_norm)
+        print("losses in GradNorm", losses)
 
         grads1 = torch.stack(grads)
         #print("grads1", grads1.tolist())

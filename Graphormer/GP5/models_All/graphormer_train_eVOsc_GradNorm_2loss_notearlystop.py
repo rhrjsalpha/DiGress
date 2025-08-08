@@ -53,8 +53,7 @@ def train_model_ex_porb(
     *,
     config: Dict,
     target_type: str = "ex_prob",
-    loss_function_full_spectrum: str = "MSE", # MSE, MAE, SoftDTW, SID
-    loss_function_nm_point: str = "MSE", # MSE MAE
+    loss_function_full_spectrum: list[str] = ["MSE"], # MSE, MAE, SoftDTW, SID
     loss_function_ex: list[str] = ["SoftDTW"], # MSE, MAE, SoftDTW, SID
     loss_function_prob: list[str] = ["SoftDTW"], # MSE, MAE, SoftDTW, SID
     num_epochs: int = 10,
@@ -74,6 +73,7 @@ def train_model_ex_porb(
     global_feature_names: List[str] | None = None,
     ex_normalize: str = "ex",
     prob_normalize: str = "prob",
+    debug = True
 ) -> Tuple[Dict, str]:
     """Graphormer 학습 + 인‑샘플 평가.
 
@@ -86,10 +86,10 @@ def train_model_ex_porb(
     """
 
     # ---------------- 데이터 로딩 ----------------
-    print("config[mode]",config["mode"])
-    print("target_type", config.get("target_type"))
+    print("train_model_ex_porb config[mode]",config["mode"])
+    print("train_model_ex_porb target_type", config.get("target_type"))
     if DATASET is None:
-        print("nominal_feature_vocab",nominal_feature_vocab)
+        print("train_model_ex_porb nominal_feature_vocab",nominal_feature_vocab)
         dataset = UnifiedSMILESDataset(
             csv_file=dataset_path,
             nominal_feature_vocab=nominal_feature_vocab,
@@ -111,14 +111,14 @@ def train_model_ex_porb(
             intensity_normalize = config.get("intensity_normalize","min_max"),
             intensity_range = config.get("intensity_range",(200,800)),
         )
-        print("dataset.mode ,dataset.graphs[0]",dataset.mode,)
+        print("train_model dataset.mode ,dataset.graphs[0]",dataset.mode,)
 
         example_graph = dataset.graphs[0]
         has_global_cat = "global_features_cat" in example_graph
         has_global_cont = "global_features_cont" in example_graph
 
-        print("Graph 내부에 global_features_cat 있음:", has_global_cat)
-        print("Graph 내부에 global_features_cont 있음:", has_global_cont)
+        print("train_model Graph 내부에 global_features_cat 있음:", has_global_cat)
+        print("train_model Graph 내부에 global_features_cont 있음:", has_global_cont)
     else:
         dataset = DATASET
 
@@ -131,7 +131,7 @@ def train_model_ex_porb(
 
     # ---------------- 모델/옵티마이저 ----------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("config",config)
+    print("train_model config",config)
     model = GraphormerModel(config).to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -202,14 +202,14 @@ def train_model_ex_porb(
 
                 optimizer.zero_grad()
                 outputs = model(batch_data, targets=targets, target_type=target_type)
-                print("outputs.shape",outputs.shape, targets.shape)
+                print("train_model outputs.shape",outputs.shape, targets.shape)
                 out_ex, tgt_ex = outputs[:, :, 0:1] + 1e-8, targets[:, :, 0:1] + 1e-8
                 out_prob, tgt_prob = outputs[:, :, 1:2] + 1e-8, targets[:, :, 1:2] + 1e-8
 
                 # loss 계산 (배치 내 개별 스펙트럼 평균)
                 loss_ex_dict = {}
                 for loss_ex_name, crit_ex  in crit_ex_dict.items():
-                    if loss_function_ex == "SID":
+                    if loss_ex_name == "SID":
                         mask_ex = torch.ones_like(out_ex, dtype=torch.bool)
                         loss_ex = torch.stack([
                             crit_ex(out_ex[i].unsqueeze(0), tgt_ex[i].unsqueeze(0), mask_ex[i], 1e-8)
@@ -224,7 +224,7 @@ def train_model_ex_porb(
 
                 loss_prob_dict = {}
                 for loss_prob_name, crit_prob in crit_prob_dict.items():
-                    if loss_function_prob == "SID":
+                    if loss_prob_name == "SID":
                         mask_prob = torch.ones_like(out_prob, dtype=torch.bool)
                         loss_prob = torch.stack([
                             crit_prob(out_prob[i].unsqueeze(0), tgt_prob[i].unsqueeze(0), mask_prob[i], 1e-8)
@@ -249,7 +249,7 @@ def train_model_ex_porb(
                 if not first_losses_ex:
                     for loss_name_ex, loss_val_ex in loss_ex_dict.items():
                         first_losses_ex[loss_name_ex] = loss_val_ex.item()
-                    print("first_losses_ex", first_losses_ex)
+                    print("train_model first_losses_ex", first_losses_ex[loss_name_ex])
 
                 if not first_losses_prob:
                     for loss_name_prob, loss_val_prob in loss_prob_dict.items():
@@ -296,7 +296,6 @@ def train_model_ex_porb(
                     total_loss_list.append(loss_val * weight)
                 total_loss = sum(total_loss_list)
 
-                # total_loss = weight_true[0] * norm_ex + weight_true[1] * norm_prob
                 total_loss.backward()
                 optimizer.step()
 
@@ -340,20 +339,8 @@ def train_model_ex_porb(
                 if history_key_weight not in history:
                     history[history_key_weight] = []
                 history[history_key_weight].append(float(weight_true[i]))
-
-            #history["ex_loss"].append(float(np.mean(ex_losses)))
-            #history["prob_loss"].append(float(np.mean(prob_losses)))
-            #history["total_loss"].append(epoch_loss)
-            #history["normalized_ex_loss"].append(float(np.mean(norm_ex_list)))
-            #history["normalized_prob_loss"].append(float(np.mean(norm_prob_list)))
-            #history["weight_ex"].append(float(weight_true[0]))
-            #history["weight_prob"].append(float(weight_true[1]))
 #
             elapsed = time.time() - t0
-            #print(
-            #    f"Epoch {epoch:03d}/{num_epochs} | total {epoch_loss:.4f} | ex {history['ex_loss'][-1]:.4f} | prob {history['prob_loss'][-1]:.4f} | w {weight_true.tolist()} | {elapsed:.1f}s",
-            #    flush=True,
-            #)
 
             # ex 손실들 중 마지막 값을 문자열로 만듦
             ex_loss_str = " | ".join([
@@ -384,21 +371,30 @@ def train_model_ex_porb(
         #total_losses = num_ex_losses + num_prob_losses
         # gradnorm = GradNorm(num_losses=total_losses, alpha=alpha)
 
-        if target_type == "exp_spectrum":
-            criterion = _make_loss(loss_function_full_spectrum)
-        elif target_type == "nm_distribution":
-            criterion = _make_loss(loss_function_nm_point)
+        if target_type in ["exp_spectrum", "nm_distribution"]:
+            criterion_dict = {}
+            for name in loss_function_full_spectrum:
+                criterion_dict[name] = _make_loss(name)
         else:
             raise ValueError(f"Unknown target_type: {target_type}")
 
-        history = {
-            "loss": [],
+        num_losses = len(criterion_dict)
+        gradnorm = GradNorm(num_losses=num_losses, alpha=alpha)
+        weight_true = torch.full((num_losses,), 1.0 / num_losses, device=device)
+
+        first_losses = None
+
+        history: Dict[str, List[float]] = {
+            "total_loss": [],
+            "normalized_loss": [],
+            "weight": [],
         }
 
         for epoch in range(1, num_epochs + 1):
             t0 = time.time()
             model.train()
-            epoch_losses = []
+            epoch_loss, losses, wts = 0.0 , {}, []
+            norm_dict = {}
 
             for batch in dataloader:
                 batch_data = {k: v.to(device) for k, v in batch.items() if k != "targets"}
@@ -407,42 +403,121 @@ def train_model_ex_porb(
                 optimizer.zero_grad()
                 outputs = model(batch_data, targets=targets, target_type=target_type)
 
-                batch_losses = []
-                for i in range(outputs.size(0)):
-                    y_pred = outputs[i].unsqueeze(0).unsqueeze(-1)
-                    y_true = targets[i].unsqueeze(0).unsqueeze(-1)
+                y_pred = outputs.unsqueeze(-1)
+                y_true = targets.unsqueeze(-1)
 
+                # loss 계산 (배치 내 개별 스펙트럼 평균)
+                loss_dict = {}
+                for loss_name, criterion in criterion_dict.items():
                     if target_type == "exp_spectrum":
-                        mask = batch["masks"][i].to(device)
-                        mask_1d = mask == 1
-                        y_pred = y_pred[0][mask_1d].unsqueeze(0).unsqueeze(-1)
-                        y_true = y_true[0][mask_1d].unsqueeze(0).unsqueeze(-1)
+                        mask = batch["masks"].to(device)
+                        #mask = mask.unsqueeze(-1)         # [B, N, 1]
+                        print("mask.shape",mask.shape)
+                        #mask_3d = mask.expand_as(y_pred)  # [B, N, 1]
+                        print(y_pred.shape)
+                        y_pred = y_pred[mask]
+                        y_true = y_true[mask]
+                    elif target_type == "nm_distribution":
+                        # 전부 valid → reshape 만
+                        y_pred = y_pred
+                        y_true = y_true
+                    else:
+                        raise ValueError(f"Unknown target_type: {target_type}")
 
-                    if loss_function_full_spectrum == "SID":
+                    if loss_name == "SID":
                         mask_tensor = torch.ones_like(y_pred, dtype=torch.bool)
-                        loss_i = criterion(y_pred, y_true, mask_tensor, 1e-8)
+                        loss_i = criterion(y_pred + 1e-8, y_true + 1e-8, mask_tensor, 1e-8)
+                        loss_i = loss_i.mean()
                     else:
                         loss_i = criterion(y_pred, y_true)
+                        loss_i = loss_i.mean()
 
-                    batch_losses.append(loss_i)
+                    loss_dict[loss_name] = loss_i
 
-                total_loss = torch.stack(batch_losses).mean()
+                if first_losses is None:
+                    print("first_loss_init")
+                    first_losses = {}
+
+                # Populate first losses
+                if len(first_losses) < num_losses:
+                    for loss_name, loss_val in loss_dict.items():
+                        first_losses[loss_name] = loss_val.item()
+                print("train_model first_losses", first_losses)
+
+                norm = {}
+                for loss_name, loss_val in loss_dict.items():
+                    if not loss_name in losses.keys():
+                        losses[loss_name] = []
+                    losses[loss_name].append(loss_val)
+
+                    norm[loss_name] = loss_val / first_losses[loss_name]
+
+                    if not loss_name in norm_dict.keys():
+                        norm_dict[loss_name] = []
+                    norm_dict[loss_name].append(norm[loss_name])
+                print("train_model norm",norm)
+
+                to_caculate_weights_dict = {"Name": [], "loss_val": []}
+                for loss_name, loss_val in norm.items():
+                    to_caculate_weights_dict["Name"].append(loss_name)
+                    to_caculate_weights_dict["loss_val"].append(loss_val)
+                print("train_model to_caculate_weights_dict",to_caculate_weights_dict)
+
+                weights = gradnorm.compute_weights(to_caculate_weights_dict["loss_val"], model)
+                print("train_model weights", weights)
+
+                wts.append(weights.detach().cpu().numpy())
+
+                total_loss_list = []
+                for loss_val, weight in zip(to_caculate_weights_dict["loss_val"], weight_true):
+                    total_loss_list.append(loss_val * weight)
+                total_loss = sum(total_loss_list)
+                print("train_model total_loss", total_loss)
+
                 total_loss.backward()
                 optimizer.step()
 
-                epoch_losses.append(total_loss.item())
+                epoch_loss += total_loss.item()
 
-            avg_loss = np.mean(epoch_losses)
-            history["loss"].append(avg_loss)
+            epoch_loss /= len(dataloader)
+            weight_true = torch.tensor(np.mean(wts, axis=0), device=device)
+            history["total_loss"].append(epoch_loss)
+
+            for i, name in enumerate(to_caculate_weights_dict["Name"]):
+                avg_loss = float(torch.stack(losses[name]).mean().item())
+                avg_norm = float(torch.stack(norm_dict[name]).mean().item())
+
+                history_key_loss = f"loss_{name}"
+                history_key_norm = f"normalized_loss_{name}"
+                history_key_weight = f"weight_{name}"
+
+                if history_key_loss not in history:
+                    history[history_key_loss] = []
+                if history_key_norm not in history:
+                    history[history_key_norm] = []
+                if history_key_weight not in history:
+                    history[history_key_weight] = []
+
+                history[history_key_loss].append(avg_loss)
+                history[history_key_norm].append(avg_norm)
+                history[history_key_weight].append(float(weight_true[i]))
 
             elapsed = time.time() - t0
+            loss_strs = [
+                f"{name}: {history[f'loss_{name}'][-1]:.4f}, {history[f'normalized_loss_{name}'][-1]:.4f}"
+                for name in to_caculate_weights_dict["Name"]
+                if f"loss_{name}" in history and len(history[f"loss_{name}"]) > 0
+            ]
+
             print(
-                f"Epoch {epoch:03d}/{num_epochs} | loss {avg_loss:.4f} | {elapsed:.1f}s",
-                flush=True,
+                f"Epoch {epoch:03d}/{num_epochs} | total {epoch_loss:.4f} | "
+                + " | ".join(loss_strs)
+                + f" | w {weight_true.tolist()} | {elapsed:.1f}s",
+                flush=True
             )
 
-            if avg_loss < best_combined_loss:
-                best_combined_loss = avg_loss
+            if epoch_loss < best_combined_loss:
+                best_combined_loss = epoch_loss
                 best_epoch = epoch
                 torch.save(model.state_dict(), best_model_path)
 
@@ -722,7 +797,7 @@ def evaluate_model_metrics(model, dataloader, target_type, device, soft_dtw_fn, 
 
                         #print("y_pred", y_pred)
                         #print("y_true", y_true)
-                        print("nm distibution sid",sid)
+                        #print("nm distibution sid",sid)
                         sis = 1 / (1 + sid)
 
                         r2_spectrum.append(r2)
@@ -904,7 +979,7 @@ def main() -> None:
     global device
 
     GLOBAL_FEATURE_NAMES = ['Solvent', 'Temperature', 'Pressure']
-    QM_exp_data = "QM" # exp
+    QM_exp_data = "exp" # exp
     if QM_exp_data == "QM":
         dataset_train_path = "../../graphormer_data/train_50_with_features.csv"
         dataset_test_path = "../../graphormer_data/test_10_with_features.csv"
@@ -951,13 +1026,14 @@ def main() -> None:
         "pre_layernorm": False,
         "q_noise": 0.0,
         "qn_block_size": 8,
-        "output_size": 100, # 100(ex_prob), 601(nm_ditribution), exp_spectrum 100
+        "output_size": 100, # 100(ex_prob), 451(nm_ditribution), exp_spectrum 100
         "num_categorical_features": 7,  # (= 7 atom categorical)
         "num_continuous_features": 2,  # (= 2 atom continuous)
-        "mode": "cls_global_data", # "cls_only" , "cls_global_data", "cls_global_model"
-        "target_type": "ex_prob", # "default", "ex_prob", "nm_distribution", "exp_spectrum"
+        "mode": "cls_only", # "cls_only" , "cls_global_data", "cls_global_model"
+        "target_type": "exp_spectrum", # "default", "ex_prob", "nm_distribution", "exp_spectrum"
         "intensity_normalize": "min_max",
-        "intensity_range" : (1,100)
+        "intensity_range" : (1,100), # (150,601) nm_distribution , (1,100) ex_prob exp_spectrum
+        "nm_dist_mode" : "gauss"
     }
 
     config.update({
@@ -989,10 +1065,10 @@ def main() -> None:
         res, best_path = train_model_ex_porb(
             config=config,
             target_type=config.get("target_type"),
-            loss_function_full_spectrum = loss_name,  # MSE, MAE, SoftDTW, SID
-            loss_function_nm_point = loss_name,
-            loss_function_ex= ["MAE", "MSE"],
-            loss_function_prob= ["SoftDTW"],
+            loss_function_full_spectrum = ['SoftDTW','SID'],  # MSE, MAE, SoftDTW, SID ['MSE','MAE','SoftDTW','SID']
+            # loss_function_nm_point = loss_name,
+            loss_function_ex= ['MSE','MAE','SoftDTW','SID'],
+            loss_function_prob= ['MSE','MAE','SoftDTW','SID'],
             num_epochs=200,
             batch_size=50,
             n_pairs=50,

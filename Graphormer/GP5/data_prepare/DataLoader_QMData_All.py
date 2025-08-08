@@ -611,11 +611,11 @@ class UnifiedSMILESDataset(Dataset):
                     norm_row[mask] = (valid_vals - row_min) / row_range
                     normed.append(norm_row)
 
-                masks.append(mask.astype(np.float32))
+                masks.append(mask)
 
             spectrum = np.stack(normed)
             spectrum = torch.tensor(spectrum, dtype=torch.float32)
-            mask_tensor = torch.tensor(np.stack(masks), dtype=torch.float32)  # 또는 dtype=torch.bool
+            mask_tensor = torch.tensor(np.stack(masks), dtype=torch.bool)  # 또는 dtype=torch.bool
             return spectrum, mask_tensor
 
         else:
@@ -771,8 +771,18 @@ def collate_fn(batch, ds, n_pairs=None, min_max=None):
         "targets": torch.stack([ds.targets[i] for i in tgt_idx])
     }
 
+    #if ds.target_type == "exp_spectrum":
+    #    print("masks in collate_fn", ds.masks.shape)
+    #    res.update({"masks":ds.masks})
+
     if ds.target_type == "exp_spectrum":
-        res.update({"masks":ds.masks})
+        # 배치에 들어온 인덱스(tgt_idx)에 맞춰 마스크만 추출
+        mask_batch = torch.as_tensor(ds.masks[tgt_idx], dtype=torch.bool)  # [B, P]
+
+        # y_pred 가 [B, P, 1] 형태라면 차원 맞추기
+        mask_batch = mask_batch.unsqueeze(-1)  # [B, P, 1]
+
+        res["masks"] = mask_batch
 
     # ─────────────────────────────────────
     # Global Feature 모드일 경우만 추가
