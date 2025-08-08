@@ -57,7 +57,7 @@ def train_model_ex_porb(
     num_epochs: int = 10,
     batch_size: int = 64,
     n_pairs: int = 50,
-    learning_rate: float = 1e-3,
+    learning_rate: float = 1e-4,
     dataset_path: str,
     test_dataset_path: str,
     DATASET=None,
@@ -90,6 +90,7 @@ def train_model_ex_porb(
         print("train_model_ex_porb nominal_feature_vocab",nominal_feature_vocab)
         dataset = UnifiedSMILESDataset(
             csv_file=dataset_path,
+            mol_col=config["mol_col"],
             nominal_feature_vocab=nominal_feature_vocab,
             continuous_feature_names=continuous_feature_names,
             global_cat_dim=global_cat_dim,
@@ -181,7 +182,9 @@ def train_model_ex_porb(
             epoch_loss, losses, wts = 0.0 , {}, []
             norm_dict = {}
 
+            batch_counter = 0
             for batch in dataloader:
+                batch_counter+=1
                 batch_data = {k: v.to(device) for k, v in batch.items() if k != "targets"}
                 targets = batch["targets"].to(device)
 
@@ -189,12 +192,12 @@ def train_model_ex_porb(
                 outputs = model(batch_data, targets=targets, target_type=target_type)
 
                 mask_batch = batch["masks"].to(device)  # [B, L]
-                print("mask_batch.shape", mask_batch.shape)
+                # print("mask_batch.shape", mask_batch.shape)
                 y_pred = outputs.unsqueeze(-1)
                 y_true = targets.unsqueeze(-1)
 
                 # 2) 손실 누적용 dict 초기화
-                batch_loss_dict = {name: 0.0 for name in criterion_dict}
+                batch_loss_dict = {loss_name: [] for loss_name in criterion_dict}
                 valid_cnt = 0
 
                 # loss 계산 (배치 내 개별 스펙트럼 평균)
@@ -205,21 +208,42 @@ def train_model_ex_porb(
 
                     yp_i = y_pred[i, valid_idx].unsqueeze(0)  # [1, Li, 1]
                     yt_i = y_true[i, valid_idx].unsqueeze(0)  # [1, Li, 1]
+                    print(f"yp_i {epoch} {batch_counter}",yp_i.shape, yp_i.min(), yp_i.max())
+                    print(f"yt_i {epoch} {batch_counter}",yt_i.shape, yt_i.min(), yt_i.max())
 
+                    data_count = 0
                     for loss_name, criterion in criterion_dict.items():
+                        data_count += 1
                         if loss_name == "SID":
                             m = torch.ones_like(yp_i, dtype=torch.bool)
-                            loss_val = criterion(yp_i + 1e-8, yt_i + 1e-8, m, 1e-8).mean()
+                            print("mask sum", m.sum())
+                            loss_val = criterion(yp_i + 1e-8, yt_i + 1e-8, m, 1e-8)
+                            # print("loss_val SID",loss_val)
+                            loss_val = loss_val.mean()
+                            print("loss_val SID 2 {}",loss_val, type(loss_val))
+                            if torch.isnan(loss_val):
+                                print(
+                                    f"🚨 NaN 발생 in loss: {loss_name}, at epoch {epoch}, batch {batch_counter}, sample {i}")
+                                print(f"yp_i:\n{yp_i}")
+                                print(f"yt_i:\n{yt_i}")
+                                print(f"yp_i stats: min={yp_i.min()}, max={yp_i.max()}, mean={yp_i.mean()}")
+                                print(f"yt_i stats: min={yt_i.min()}, max={yt_i.max()}, mean={yt_i.mean()}")
+                                break
                         else:
                             loss_val = criterion(yp_i, yt_i).mean()
 
-                        batch_loss_dict[loss_name] += loss_val # 그냥 append후 sum 해는게 나을 수도 있음
+                        batch_loss_dict[loss_name].append(loss_val) # 그냥 append후 sum 해는게 나을 수도 있음
+                        print(f"batch_loss_dict[loss_name],{loss_name},{epoch},{batch_counter},{data_count} ", batch_loss_dict[loss_name])
 
                     valid_cnt += 1
 
                     # 4) 배치 평균
-                    for name in batch_loss_dict:
-                        batch_loss_dict[name] = batch_loss_dict[name] / max(valid_cnt, 1)
+                    avg_batch_loss_dict = {
+                        name: torch.stack(batch_loss_dict[name]).mean()
+                        if len(batch_loss_dict[name]) > 0
+                        else torch.tensor(0.0, device=device)
+                        for name in batch_loss_dict
+                    }
 
                     #if loss_name == "SID":
                     #    mask_tensor = torch.ones_like(y_pred, dtype=torch.bool)
@@ -237,12 +261,12 @@ def train_model_ex_porb(
 
                 # Populate first losses
                 if len(first_losses) < num_losses:
-                    for loss_name, loss_val in batch_loss_dict.items():
+                    for loss_name, loss_val in avg_batch_loss_dict.items():
                         first_losses[loss_name] = loss_val.item()
                 print("train_model first_losses", first_losses)
 
                 norm = {}
-                for loss_name, loss_val in batch_loss_dict.items():
+                for loss_name, loss_val in avg_batch_loss_dict.items():
                     if not loss_name in losses.keys():
                         losses[loss_name] = []
                     losses[loss_name].append(loss_val)
@@ -269,7 +293,7 @@ def train_model_ex_porb(
                 for loss_val, weight in zip(to_caculate_weights_dict["loss_val"], weight_true):
                     total_loss_list.append(loss_val * weight)
                 total_loss = sum(total_loss_list)
-                print("train_model total_loss", total_loss)
+                # print("train_model total_loss", total_loss)
 
                 total_loss.backward()
                 optimizer.step()
@@ -278,6 +302,8 @@ def train_model_ex_porb(
 
             epoch_loss /= len(dataloader)
             weight_true = torch.tensor(np.mean(wts, axis=0), device=device)
+            print(wts)
+            print(f"weight true {epoch+1}",weight_true)
             history["total_loss"].append(epoch_loss)
 
             for i, name in enumerate(to_caculate_weights_dict["Name"]):
@@ -332,6 +358,7 @@ def train_model_ex_porb(
     if TEST_VAL_DATASET is None:
         dataset_test = UnifiedSMILESDataset(
             csv_file=test_dataset_path,
+            mol_col=config["mol_col"],
             nominal_feature_vocab=nominal_feature_vocab,
             continuous_feature_names=continuous_feature_names,
             global_cat_dim=global_cat_dim,
@@ -392,6 +419,22 @@ PREDEFINED_VOCAB = {
         'Tetrahydrofuran', 'Toluene', 'Water', "DMSO", "Acetone"
     ],
 }
+csv_path = "../../graphormer_data/know_it_all_2_reindexed.csv"
+
+df = pd.read_csv(csv_path)
+
+# 2. 명목형 컬럼 지정
+categorical_cols = ['Solvent', 'Conditions']
+
+# 3. 연속형 처리할 컬럼 지정
+continuous_cols = ['Concentration_mol_L']
+
+# 4. 명목형: 자동으로 고유값을 PREDEFINED_VOCAB에 저장
+PREDEFINED_VOCAB = {
+    col: sorted(df[col].dropna().unique().tolist())
+    for col in categorical_cols
+}
+
 
 ATOM_FEATURES_VOCAB = {
         'atomic_num': list(range(1, 119)),  # TODO I need to decrease the range
@@ -437,16 +480,15 @@ def main() -> None:
     #global nominal_dims, continuous_feature_names, global_cat_dim, global_cont_dim
     global device
 
-    GLOBAL_FEATURE_NAMES = ['Solvent', 'Temperature', 'Pressure']
+    GLOBAL_FEATURE_NAMES = ['Solvent', 'Conditions', 'Concentration_mol_L']
     QM_exp_data = "exp" # exp
     if QM_exp_data == "QM":
         dataset_train_path = "../../graphormer_data/train_50_with_features.csv"
         dataset_test_path = "../../graphormer_data/test_10_with_features.csv"
         print(QM_exp_data)
     elif QM_exp_data == "exp":
-        dataset_train_path = "../../graphormer_data/NIST_with_fake_golbal.csv"
-        dataset_test_path = "../../graphormer_data/NIST_with_fake_golbal.csv"
-        print(QM_exp_data)
+        dataset_train_path = "../../graphormer_data/know_it_all_2_reindexed.csv"# "../../graphormer_data/NIST_with_fake_golbal.csv"
+        dataset_test_path = "../../graphormer_data/know_it_all_2_reindexed.csv"# "../../graphormer_data/NIST_with_fake_golbal.csv"
     else:
         print("path error")
 
@@ -485,14 +527,15 @@ def main() -> None:
         "pre_layernorm": False,
         "q_noise": 0.0,
         "qn_block_size": 8,
-        "output_size": 100, # 100(ex_prob), 451(nm_ditribution), exp_spectrum 100
+        "output_size": 601, # 100(ex_prob), 451(nm_ditribution), exp_spectrum 100,know it all 601
         "num_categorical_features": 7,  # (= 7 atom categorical)
         "num_continuous_features": 2,  # (= 2 atom continuous)
         "mode": "cls_only", # "cls_only" , "cls_global_data", "cls_global_model"
         "target_type": "exp_spectrum", # "default", "ex_prob", "nm_distribution", "exp_spectrum"
         "intensity_normalize": "min_max",
-        "intensity_range" : (1,100), # (150,601) nm_distribution , (1,100) ex_prob exp_spectrum
-        "nm_dist_mode" : "gauss"
+        "intensity_range" : (200,800), # (150,601) nm_distribution , (1,100) ex_prob exp_spectrum, know it all(200,800)
+        "nm_dist_mode" : "gauss",
+        "mol_col" : "InChI",
     }
 
     config.update({
@@ -524,7 +567,7 @@ def main() -> None:
         res, best_path = train_model_ex_porb(
             config=config,
             target_type=config.get("target_type"),
-            loss_function_full_spectrum = ['SID'],  # MSE, MAE, SoftDTW, SID ['MSE','MAE','SoftDTW','SID']
+            loss_function_full_spectrum = ['MAE'],  # MSE, MAE, SoftDTW, SID ['MSE','MAE','SoftDTW','SID']
             # loss_function_nm_point = loss_name,
             loss_function_ex= ['MSE','MAE','SoftDTW','SID'],
             loss_function_prob= ['MSE','MAE','SoftDTW','SID'],

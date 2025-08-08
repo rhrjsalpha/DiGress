@@ -76,7 +76,19 @@ def smiles2graph_customized(
     """
     SMILES 1 개를 Graphormer용 그래프 딕셔너리로
     """
-    mol = Chem.MolFromSmiles(smiles)
+    # InChI 문자열이면
+    # print("smiles2graph_customized, smiles",smiles)
+    if smiles.startswith("InChI="):
+        try:
+            mol = Chem.MolFromInchi(smiles)
+        except Exception as e:
+            print(f"[ERROR] MolFromInchi failed: {e}")
+    else:
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+        except Exception as e:
+            print(f"[ERROR] MolFromSmiles failed: {e}")
+
     if mol is None:
         return None
 
@@ -212,7 +224,18 @@ def smiles2graph_with_global(
         BOND_FEATURES_VOCAB,
         multi_hop_max_dist: int,
 ):
-    mol = Chem.MolFromSmiles(smiles)
+    #print("smiles2graph_with_global, smiles:", smiles)
+    if smiles.startswith("InChI="):
+        try:
+            mol = Chem.MolFromInchi(smiles)
+        except Exception as e:
+            print(f"[ERROR] MolFromInchi failed: {e}")
+    else:
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+        except Exception as e:
+            print(f"[ERROR] MolFromSmiles failed: {e}")
+
     if mol is None or len(Chem.GetMolFrags(mol)) > 1:
         return None
 
@@ -308,6 +331,7 @@ class UnifiedSMILESDataset(Dataset):
         global_cat_dim,
         global_cont_dim,
         ATOM_FEATURES_VOCAB, float_feature_keys, BOND_FEATURES_VOCAB,
+        mol_col: str = 'smiles',
         mode="cls",  # "cls", "cls+global_data", "cls+global_model"
         max_nodes: int = 128,
         multi_hop_max_dist: int = 5,
@@ -343,6 +367,7 @@ class UnifiedSMILESDataset(Dataset):
 
         self.attn_bias_weight = attn_bias_w
 
+        self.mol_col = mol_col
         self.data = pd.read_csv(csv_file)
         self.nominal_feature_info = self._build_nominal_feature_info()
 
@@ -389,7 +414,7 @@ class UnifiedSMILESDataset(Dataset):
         self.raw_graphs = []
         valid_indices = []
 
-        for i, s in enumerate(self.data["smiles"]):
+        for i, s in enumerate(self.data[self.mol_col]):
             g = smiles2graph_customized(
                 s,
                 self.multi_hop_max_dist,
@@ -408,7 +433,7 @@ class UnifiedSMILESDataset(Dataset):
 
         self.data = self.data.iloc[valid_indices].reset_index(drop=True)
 
-        self.graphs = [self._preprocess_graph_with_optional_global(i, g, ATOM_FEATURES_VOCAB, float_feature_keys, BOND_FEATURES_VOCAB, ) for i, g in enumerate(self.raw_graphs)]
+        self.graphs = [self._preprocess_graph_with_optional_global(i, g, ATOM_FEATURES_VOCAB, float_feature_keys, BOND_FEATURES_VOCAB,) for i, g in enumerate(self.raw_graphs)]
         for g in self.graphs:
             print("",g.keys())
 
@@ -457,7 +482,7 @@ class UnifiedSMILESDataset(Dataset):
             global_cat = self._get_global_feature_cat_tensor(idx).tolist()
             global_cont = self._get_global_feature_cont_tensor(idx).tolist()
             return smiles2graph_with_global(
-                self.data.loc[idx, "smiles"],
+                self.data.loc[idx, self.mol_col],
                 global_cat,
                 global_cont,
                 multi_hop_max_dist=self.multi_hop_max_dist,
@@ -488,7 +513,7 @@ class UnifiedSMILESDataset(Dataset):
                 target_cols.append(str(i))
         else:
             target_cols = []
-        required_cols = ["smiles"] + target_cols
+        required_cols = [self.mol_col] + target_cols
 
         return required_cols + list(self.nominal_feature_vocab.keys()) + self.continuous_feature_names
 
