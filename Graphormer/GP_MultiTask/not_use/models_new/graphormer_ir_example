@@ -1,0 +1,57 @@
+구분	추가된 노드	그래프에 넣는 방법	모델이 얻는 이점
+Graphormer-IR	글로벌 위상(phase) 노드
+— 측정 환경(기체·KBr pellet·Nujol mull·CCl4 용액·액상 film)의 ID를 담는 특수 노드	1. 원자 노드 뒤에 1 개 노드를 더 추가
+2. 모든 원자와 가상의 “거리 1”로 연결해 self-attention에 참여시킴
+3. 노드 ID만 one-hot으로 주고, 나머지 구조·거리 인코딩은 일반 원자와 동일하게 처리	• 스펙트럼에 큰 영향을 주는 **환경 효과(용매·담지제·상 변화)**를 그래프 한 곳에 응집해 전달
+• 각 원자가 위상 노드로부터 attention을 받을 수 있어 장거리 상호작용(수소 결합, 집단 진동 등) 학습이 용이해짐 stienstra-et-al-2024-gr…
+Graphormer-IRIS (이온 스펙트럼 버전)	글로벌 전하(charge) 노드
+— [H]⁺, [H]⁻, Na⁺ 등 이온화 방식/전하 상태를 표기	Phase 노드를 전하 노드로 교체-학습
+(모델 파이프라인·attention 연결 방식은 동일)	• 전하 위치를 지정하지 않고도 분자 전체 전하 분포를 알려줘 IR ion spectra의 붉은 이동(peak shift)·강도 변화를 학습 가능
+
+
+답변 한-줄 요약
+Graphormer 원본 = 모든 원자와 연결된 [VNode](사실상의 CLS) 1 개.
+
+Graphormer-IR = 기존 [VNode] 유지 + 실험 phase·전하 등을 담는 추가 global node 1 개 더 넣음.
+
+1. 원본 Graphormer(2021)의 전역 노드 구조
+그래프 수준 표현을 위해 **[VNode]**라는 특수 노드를 분자 그래프에 추가하고, 이를 모든 노드와 가상으로 연결.
+
+최종 레이어에서 [VNode] 임베딩
+ℎ
+𝐺
+h
+G
+​
+ 를 그래프 특징으로 사용.
+
+저자들은 “[VNode]는 BERT의 [CLS] 토큰과 유사한 시퀀스-레벨 역할을 한다”고 명시.
+
+→ 즉, Graphormer에는 이미 ‘CLS 토큰’ 기능을 하는 전역 노드가 내장돼 있음.
+
+2. Graphormer-IR(2024)의 추가 변경 점
+구성 요소	동작 방식
+기존 [VNode]	Graphormer 백본 그대로 유지해 그래프 read-out에 사용
+새 global node	실험 phase(기체·KBr disk 등)나 전하 정보를 one-hot/임베딩으로 담아 모든 원자와 연결<br/>“we introduce a global node to all graphs that encodes the spectral phases … connected to all other nodes” stienstra-et-al-2024-gr…
+Edge-tag	글로벌 노드와의 연결 여부를 나타내는 전용 edge-feature 추가 stienstra-et-al-2024-gr…
+효과	글로벌 노드를 제거하면 SISµ 0.853 → 0.811로 성능 급락 stienstra-et-al-2024-gr…
+
+후속 IRIS 모델에서도 같은 틀을 확장해 “charge global node”로 전하 상태를 학습 hopkins-et-al-2025-a-ma….
+
+3. 결론
+Graphormer : CLS 역할의 [VNode] 1 개만.
+
+Graphormer-IR : 기존 [VNode] + 목적에 맞춘 추가 global node를 별도로 삽입.
+
+따라서 Graphormer-IR은 CLS/[VNode]에 정보를 억지로 우겨 넣지 않고, 전역 메타데이터마다 전용 global node를 새로 만들어 attention으로 분자 전역에 전달하는 디자인을 채택합니다.
+
+## 추가
+🔍 왜 ‘edge flag’까지 넣을까?
+원자 ↔ global node 간 연결은 물리적 결합이 아니므로, 기존 결합 타입 one-hot만으로는 구분하기 어려움.
+
+논문은 “edge is connected to the global phase node” 여부를 별도 클래스에 넣어 c<sub>ij</sub> 편향에서 차별화했다 stienstra-et-al-2024-gr….
+
+🧮 거리 bias는 어떻게 계산되나?
+Graphormer-IR 구현은 최단거리 계산 시 global node를 우회 경로에 쓰지 않도록 마스킹해 원자-원자 본래 거리를 보존하고,
+global node와의 거리는 상수 1로 주어 b<sub>ϕ</sub>(global,i)=emb(1) 만 사용합니다.
+이렇게 하면 거대 그래프가 한 번에 수렴되는 대신, “환경 → 원자” 정보만 직접 전달됩니다.

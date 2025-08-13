@@ -1,0 +1,11 @@
+graphormer ir 논문 그대로 재현하기
+
+global 노드와 다른 원자 노드 사이의 edge를 미리 onehot encoding에 추가
+
+없음, 단일, 이중, 삼중, 방향 -> 없음 단일 이중 삼중 방향 , is_global
+
+feature	가능한 값 개수	예시 값
+① Bond order	4	단일, 이중, 삼중, 방향족
+② Ring flag	2	고리 내부(1) / 외부(0)
+③ Conjugation flag(또는 Aromatic ≠ Aromatic)	2	공액(1) / 비공액(0)
+④ Stereo / 방향성	6	None, Up, Down, Up-Inverted, Down-Inverted, Undefined (RDKit의 BondDir 6종 등)

@@ -1,0 +1,18 @@
+연결 쌍	Graphormer 원본	Graphormer-IR 구현 관행
+원자 ↔ 원자	- RDKit 결합정보(단일, 이중, 삼중, 방향성, 방향환 등)
+- 필요하면 ring/stereo 등을 별도 one-hot → 조합해 정수 ID로 변환 (예: 4×2×2×6 = 96 클래스) stienstra-et-al-2024-gr…	그대로 유지
+CLS(V-node) ↔ 원자	edge-type을 0(없음) 으로 두고
+대신 graph_token_virtual_distance(거리 1 편향)만 추가 ⇒ edge_encoder를 아예 건드리지 않음 (원본 Graphormer 방식)	동일
+→ CLS와 원자 사이에서는 attn_edge_type에 새 ID를 만들지 않는다
+Global(phase) ↔ 원자	존재하지 않음	① “global-edge flag” 를 추가
+ • edge feature 집합에 binary 1/0 (“이 엣지는 global node와 연결인가?”)을 포함 stienstra-et-al-2024-gr…
+ • 다른 결합 feature들과 곱집합으로 묶어 새 정수 ID 생성 → atom-to-global 에는 고유 번호가 매겨짐
+② 거리 1 편향(new_global_node_virtual_distance)도 함께 사용
+
+확인할 내용
+확인할 내용
+원자-원자 엣지는 is_global = 0.
+
+Global node → 원자 엣지는 같은 화학 결합 정보가 0이더라도, is_global = 1 덕분에 96 이후 영역에 배치된다.
+
+CLS 노드 엣지는 “결합 자체가 없음” + is_global = 0 (= ID 0).

@@ -1,0 +1,44 @@
+Traceback (most recent call last):
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 527, in <module>
+    final_loss = train_model_ex_porb(
+                 ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_train_eVOsc_GradNorm_2loss_notearlystop_3.py", line 150, in train_model_ex_porb
+    outputs = model(batch_data_for_model, targets=targets, target_type=target_type)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\models_new\graphormer_3.py", line 97, in forward
+    node_embeddings, _ = self.encoder(batched_data)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\modules_ir_attention\graphormer_graph_encoder.py", line 105, in forward
+    x, _ = layer(x, self_attn_bias=attn_bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\modules_ir_attention\graphormer_graph_encoder_layer.py", line 82, in forward
+    x, attn = self.self_attn(
+              ^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kogun\PycharmProjects\DiGress\Graphormer\GP5\modules_ir_attention\multihead_attention.py", line 115, in forward
+    attn_weights += attn_bias.view(bsz * self.num_heads, tgt_len, -1)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: shape '[400, 36, -1]' is invalid for input of size 490000
