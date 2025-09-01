@@ -70,6 +70,38 @@ class NodeCycleFeatures:
         y_cycles[y_cycles > 1] = 1
         return x_cycles, y_cycles
 
+def _safe_eigh(L, max_retries=3, base_eps=1e-6):
+    N = L.size(-1)
+    I = torch.eye(N, device=L.device, dtype=L.dtype).expand_as(L)
+
+    # 1차 시도
+    try:
+        return torch.linalg.eigh(L, UPLO='L')
+    except torch._C._LinAlgError:
+        pass
+
+    # jitter를 점증시키며 재시도
+    for i in range(max_retries):
+        jitter = base_eps * (10.0 ** i)
+        try:
+            return torch.linalg.eigh(L + jitter * I, UPLO='L')
+        except torch._C._LinAlgError:
+            continue
+
+    # 마지막: float64로 올려서 재시도
+    L64, I64 = L.to(torch.float64), I.to(torch.float64)
+    for i in range(max_retries):
+        jitter = base_eps * (10.0 ** i)
+        try:
+            ev, U = torch.linalg.eigh(L64 + jitter * I64, UPLO='L')
+            return ev.to(L.dtype), U.to(L.dtype)
+        except torch._C._LinAlgError:
+            continue
+
+    # 그래도 실패하면 0 반환(훈련 지속)
+    ev = torch.zeros(L.shape[:-1], dtype=L.dtype, device=L.device)
+    U  = torch.zeros(L.shape,      dtype=L.dtype, device=L.device)
+    return ev, U
 
 class EigenFeatures:
     """
@@ -88,15 +120,22 @@ class EigenFeatures:
         mask_diag = mask_diag * (~mask.unsqueeze(1)) * (~mask.unsqueeze(2))
         L = L * mask.unsqueeze(1) * mask.unsqueeze(2) + mask_diag
 
+        L = torch.nan_to_num(L, nan=0.0, posinf=0.0, neginf=0.0)
+        L = 0.5 * (L + L.transpose(-1, -2))  # 완전 대칭화
+
+
+
         if self.mode == 'eigenvalues':
-            eigvals = torch.linalg.eigvalsh(L)        # bs, n
+            eigvals, eigvectors = _safe_eigh(L)
+            # eigvals = torch.linalg.eigvalsh(L)        # bs, n
             eigvals = eigvals.type_as(A) / torch.sum(mask, dim=1, keepdim=True)
 
             n_connected_comp, batch_eigenvalues = get_eigenvalues_features(eigenvalues=eigvals)
             return n_connected_comp.type_as(A), batch_eigenvalues.type_as(A)
 
         elif self.mode == 'all':
-            eigvals, eigvectors = torch.linalg.eigh(L)
+            eigvals, eigvectors = _safe_eigh(L)
+            # eigvals, eigvectors = torch.linalg.eigh(L)
             eigvals = eigvals.type_as(A) / torch.sum(mask, dim=1, keepdim=True)
             eigvectors = eigvectors * mask.unsqueeze(2) * mask.unsqueeze(1)
             # Retrieve eigenvalues features

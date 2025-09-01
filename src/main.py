@@ -19,7 +19,7 @@ from diffusion.extra_features import DummyExtraFeatures, ExtraFeatures
 
 
 warnings.filterwarnings("ignore", category=PossibleUserWarning)
-from utils.dist_utils import choose_ddp_strategy
+from src.dist_utils import choose_ddp_strategy
 
 def build_trainer(cfg, callbacks, name: str):
     use_gpu = cfg.general.gpus > 0 and torch.cuda.is_available()
@@ -30,7 +30,7 @@ def build_trainer(cfg, callbacks, name: str):
     strategy, backend = choose_ddp_strategy(devices, find_unused=True)
 
     if devices <= 1:
-        strategy = None
+        strategy = "auto" # auto, ddp, ddp_spawn, deepspeed
         backend = None
 
     print(f"[Dist] devices={devices}, backend={backend or 'single'} "
@@ -49,7 +49,7 @@ def build_trainer(cfg, callbacks, name: str):
         enable_progress_bar=False,
         callbacks=callbacks,
         log_every_n_steps=50 if name != 'debug' else 1,
-        logger=[]
+        logger=[],
     )
     return trainer
 
