@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from torch_geometric.data import Data, InMemoryDataset, download_url, extract_zip
 from torch_geometric.utils import subgraph
+import torch.serialization as ts
 
 import src.utils as utils
 from src.datasets.abstract_dataset import MolecularDataModule, AbstractDatasetInfos
@@ -68,7 +69,10 @@ class QM9Dataset(InMemoryDataset):
             self.file_idx = 2
         self.remove_h = remove_h
         super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[self.file_idx])
+        self.data, self.slices = torch.load(
+            self.processed_paths[self.file_idx],
+            weights_only=False,
+        )
 
     @property
     def raw_file_names(self):

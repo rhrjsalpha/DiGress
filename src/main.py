@@ -1,4 +1,3 @@
-import graph_tool as gt
 import os
 import pathlib
 import warnings
@@ -20,7 +19,39 @@ from diffusion.extra_features import DummyExtraFeatures, ExtraFeatures
 
 
 warnings.filterwarnings("ignore", category=PossibleUserWarning)
+from utils.dist_utils import choose_ddp_strategy
 
+def build_trainer(cfg, callbacks, name: str):
+    use_gpu = cfg.general.gpus > 0 and torch.cuda.is_available()
+    devices = cfg.general.gpus if use_gpu else 1
+
+    # old ckpt 호환을 위해 find_unused_parameters=True 권장
+    # (기존에 strategy="ddp_find_unused_parameters_true" 쓰시던 부분을 대체)
+    strategy, backend = choose_ddp_strategy(devices, find_unused=True)
+
+    if devices <= 1:
+        strategy = None
+        backend = None
+
+    print(f"[Dist] devices={devices}, backend={backend or 'single'} "
+          f"MASTER_ADDR={os.environ.get('MASTER_ADDR')} "
+          f"MASTER_PORT={os.environ.get('MASTER_PORT')}")
+
+    trainer = Trainer(
+        gradient_clip_val=cfg.train.clip_grad,
+        strategy=strategy,                                 # None | DDPStrategy
+        accelerator='gpu' if use_gpu else 'cpu',
+        devices=devices,
+        precision=getattr(cfg.trainer, "precision", "32-true") if hasattr(cfg, "trainer") else "32-true",
+        max_epochs=cfg.train.n_epochs,
+        check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
+        fast_dev_run=(name == 'debug'),
+        enable_progress_bar=False,
+        callbacks=callbacks,
+        log_every_n_steps=50 if name != 'debug' else 1,
+        logger=[]
+    )
+    return trainer
 
 def get_resume(cfg, model_kwargs):
     """ Resumes a run. It loads previous config without allowing to update keys (used for testing). """
@@ -186,18 +217,19 @@ def main(cfg: DictConfig):
     if name == 'debug':
         print("[WARNING]: Run is called 'debug' -- it will run with fast_dev_run. ")
 
-    use_gpu = cfg.general.gpus > 0 and torch.cuda.is_available()
-    trainer = Trainer(gradient_clip_val=cfg.train.clip_grad,
-                      strategy="ddp_find_unused_parameters_true",  # Needed to load old checkpoints
-                      accelerator='gpu' if use_gpu else 'cpu',
-                      devices=cfg.general.gpus if use_gpu else 1,
-                      max_epochs=cfg.train.n_epochs,
-                      check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
-                      fast_dev_run=cfg.general.name == 'debug',
-                      enable_progress_bar=False,
-                      callbacks=callbacks,
-                      log_every_n_steps=50 if name != 'debug' else 1,
-                      logger = [])
+    #use_gpu = cfg.general.gpus > 0 and torch.cuda.is_available()
+    trainer = build_trainer(cfg, callbacks, name)
+    #trainer = Trainer(gradient_clip_val=cfg.train.clip_grad,
+    #                  strategy="ddp_find_unused_parameters_true",  # Needed to load old checkpoints
+    #                  accelerator='gpu' if use_gpu else 'cpu',
+    #                  devices=cfg.general.gpus if use_gpu else 1,
+    #                  max_epochs=cfg.train.n_epochs,
+    #                  check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
+    #                  fast_dev_run=cfg.general.name == 'debug',
+    #                  enable_progress_bar=False,
+    #                  callbacks=callbacks,
+    #                  log_every_n_steps=50 if name != 'debug' else 1,
+    #                  logger = [])
 
     if not cfg.general.test_only:
         trainer.fit(model, datamodule=datamodule, ckpt_path=cfg.general.resume)
