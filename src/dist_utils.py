@@ -1,63 +1,58 @@
-# utils/dist_utils.py
-import os, sys, socket, torch
+# src/dist_utils.py
+import os, sys, torch, tempfile
 from typing import Union, Sequence
 from pytorch_lightning.strategies import DDPStrategy
 
 DevicesType = Union[int, Sequence[int], None]
 
-def _as_world_size(devices: DevicesType) -> int:
-    if devices is None: return 0
-    if isinstance(devices, (list, tuple)): return len(devices)
-    try: return int(devices)
-    except Exception: return 0
-
-def _pick_master_port(default="29500"):
+def _world_size(devices: DevicesType) -> int:
+    if devices is None:
+        return torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if isinstance(devices, (list, tuple)):
+        return len(devices)
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", 0))
-            return str(s.getsockname()[1])
+        return int(devices)
     except Exception:
-        return default
+        return 0
+
+def _rdzv_file() -> str:
+    """
+    모든 랭크가 동일하게 볼 수 있는 고정 경로.
+    Hydra가 작업 디렉터리를 바꿔도 ranks는 동일 cwd를 상속하므로
+    현재 작업 디렉터리에 두는 것이 가장 안전함.
+    """
+    base = os.getcwd() if os.getcwd() else tempfile.gettempdir()
+    path = os.path.join(base, ".pl_ddp_store")
+    # Windows file://에서 역슬래시 이슈 회피
+    return "file:///" + path.replace("\\", "/")
 
 def choose_ddp_strategy(devices: DevicesType, find_unused: bool = False):
-    world_size = _as_world_size(devices)
-
-    # 싱글이면 Lightning에게 맡김
-    if world_size <= 1:
-        return "auto", None
-
-    # 로컬에서 항상 loopback 사용
-    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-    os.environ.setdefault("MASTER_PORT", _pick_master_port())
+    """
+    devices: int | list[int] | None  → Lightning Trainer(devices=...)와 동일 의미
+    returns: (strategy, backend_str)
+    """
+    world = _world_size(devices)
+    if world <= 1:
+        return "auto", None  # 싱글 GPU/CPU는 자동
 
     is_windows = sys.platform.startswith("win")
     is_linux   = sys.platform.startswith("linux")
     has_cuda   = torch.cuda.is_available()
 
-    # --- Windows 핵심 픽스 ---
-    # Windows 빌드의 gloo tcp 디바이스는 제한적 → uv 전송 강제
+    # 공통: rendezvous를 file://로 고정 → MASTER_ADDR/PORT 의존 제거
+    init = _rdzv_file()
+
     if is_windows:
-        # 127.0.0.1 + 가용포트 강제
-        addr = "127.0.0.1"
-        port = os.environ.get("MASTER_PORT") or _pick_master_port()
-        os.environ["MASTER_ADDR"] = addr
-        os.environ["MASTER_PORT"] = str(port)
-
-        # Gloo 설정(Windows 권장)
-        os.environ["GLOO_DEVICE_TRANSPORT"] = "uv"
-        # NIC 이름: PowerShell의 Get-NetAdapter로 확인한 이름(가능하면 영문, 예: Ethernet)
-        os.environ["GLOO_SOCKET_IFNAME"] = os.environ.get("GLOO_SOCKET_IFNAME", "Ethernet")
-
-        # ★ 요기! env:// 대신 tcp:// 로 명시하여 호스트명 사용을 완전히 회피
-        init = f"tcp://127.0.0.1:{port}"
-        backend = "gloo"
+        # Windows는 Gloo만 사용 가능. 호스트명 경로를 피하기 위해 루프백 NIC + uv 강제.
+        os.environ.setdefault("GLOO_DEVICE_TRANSPORT", "uv")
+        os.environ.setdefault("GLOO_SOCKET_IFNAME", "Loopback Pseudo-Interface 1")  # 환경에서 덮어쓸 수 있음
         return DDPStrategy(
-            process_group_backend=backend,
-            find_unused_parameters=bool(find_unused),
+            process_group_backend="gloo",
             init_method=init,
-        ), backend
+            find_unused_parameters=bool(find_unused),
+        ), "gloo"
 
-    # Linux는 NCCL 가능하면 NCCL, 아니면 gloo
+    # Linux: NCCL 가능 시 NCCL, 아니면 gloo
     has_nccl = False
     try:
         import torch.distributed as dist
@@ -66,6 +61,8 @@ def choose_ddp_strategy(devices: DevicesType, find_unused: bool = False):
         pass
 
     backend = "nccl" if (is_linux and has_cuda and has_nccl) else "gloo"
-    return DDPStrategy(process_group_backend=backend,
-                       find_unused_parameters=bool(find_unused),
-                       init_method="env://"), backend
+    return DDPStrategy(
+        process_group_backend=backend,
+        init_method=init,
+        find_unused_parameters=bool(find_unused),
+    ), backend

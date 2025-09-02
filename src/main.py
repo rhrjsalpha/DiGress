@@ -1,9 +1,18 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 환경 변수는 torch import "전에" 최소한만: 루프백 + uv 권장(Windows)
 import os
+os.environ.setdefault("GLOO_DEVICE_TRANSPORT", "uv")
+# 루프백 NIC 이름은 시스템마다 다를 수 있으나 보통 아래 이름.
+# 다른 이름이면 실행 전 외부에서 GLOO_SOCKET_IFNAME 환경변수로 덮어써도 됨.
+os.environ.setdefault("GLOO_SOCKET_IFNAME", "Loopback Pseudo-Interface 1")
+# ─────────────────────────────────────────────────────────────────────────────
+
 import pathlib
 import warnings
 
 import torch
 torch.cuda.empty_cache()
+
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
@@ -17,102 +26,75 @@ from diffusion_model import LiftedDenoisingDiffusion
 from diffusion_model_discrete import DiscreteDenoisingDiffusion
 from diffusion.extra_features import DummyExtraFeatures, ExtraFeatures
 
-
 warnings.filterwarnings("ignore", category=PossibleUserWarning)
+
 from src.dist_utils import choose_ddp_strategy
 from pytorch_lightning.callbacks import Callback
-import torch, os
 
-os.environ["MASTER_ADDR"] = "127.0.0.1"
-os.environ["MASTER_PORT"] = "29511"            # 충돌 시 숫자만 바꿔주세요
-os.environ["GLOO_DEVICE_TRANSPORT"] = "uv"
-os.environ["GLOO_SOCKET_IFNAME"] = "Ethernet"  # 1)에서 바꾼 이름; 안 바꿨다면 "이더넷"
-
+# ─────────────────────────────────────────────────────────────────────────────
+# 유틸: 장치 해석 + GPU 모니터(선택)
 def resolve_devices(gpus_cfg):
-    import torch, os, platform
     n = torch.cuda.device_count()
     if n == 0:
-        return 0  # CPU
-    if gpus_cfg in (-1, "auto", None):
-        return list(range(n))              # 모든 GPU
+        return 0
+    if gpus_cfg in (-1, "auto", None, True):
+        return list(range(n))
     if isinstance(gpus_cfg, int):
-        return list(range(min(gpus_cfg, n)))  # 앞에서 n개
+        return list(range(min(gpus_cfg, n)))
     if isinstance(gpus_cfg, (list, tuple)):
-        # 유효 ID만 남기기 (CUDA_VISIBLE_DEVICES 쓰면 재매핑된 인덱스 기준)
         return [int(i) for i in gpus_cfg if int(i) < n]
     return 1
 
 class GpuUsageMonitor(Callback):
-    def __init__(self, interval=50):
-        self.interval = interval
-        self.nvml = None
-        self.handle = None
-
+    def __init__(self, interval=50): self.interval = interval; self.nvml=None; self.handle=None
     def setup(self, trainer, pl_module, stage=None):
-        # NVML(=nvidia-smi API) 초기화
         try:
             import pynvml
-            pynvml.nvmlInit()
-            self.nvml = pynvml
-            # 현재 랭크가 쓰는 로컬 GPU 인덱스
-            idx = pl_module.device.index if pl_module.device.type == "cuda" else torch.cuda.current_device()
+            pynvml.nvmlInit(); self.nvml=pynvml
+            idx = pl_module.device.index if pl_module.device.type=="cuda" else torch.cuda.current_device()
             self.handle = self.nvml.nvmlDeviceGetHandleByIndex(idx)
         except Exception as e:
-            print(f"[GPU-MON] NVML unavailable → util%는 생략합니다: {e}")
-
+            print(f"[GPU-MON] NVML unavailable → util% skip: {e}")
     def on_train_start(self, trainer, pl_module):
         dev = pl_module.device
-        is_cuda = (dev.type == "cuda")
-        print(f"[GPU-MON] training device={dev} is_cuda={is_cuda}")
-        # 파라미터가 실제 CUDA에 올라갔는지(DDP면 on_train_start 시점에 CUDA로 이동)
         try:
             pdev = next(pl_module.parameters()).device
-            print(f"[GPU-MON] first parameter device={pdev}")
-            if pdev.type != "cuda":
-                print("[GPU-MON][WARN] 모델 파라미터가 CUDA가 아닙니다.")
         except StopIteration:
-            pass
-
+            pdev = dev
+        print(f"[GPU-MON] training device={dev} first_param={pdev}")
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if (batch_idx + 1) % self.interval != 0:
-            return
+        if (batch_idx + 1) % self.interval != 0: return
         if not torch.cuda.is_available() or pl_module.device.type != "cuda":
-            print(f"[GPU-MON] step={trainer.global_step} CPU mode")
-            return
-
+            print(f"[GPU-MON] step={trainer.global_step} CPU"); return
         idx = pl_module.device.index if pl_module.device.index is not None else torch.cuda.current_device()
         mem = torch.cuda.memory_allocated(idx) / 1e9
         mem_max = torch.cuda.max_memory_allocated(idx) / 1e9
-        print(f"[GPU-MON] step={trainer.global_step} gpu{idx} mem={mem:.2f}GB (max {mem_max:.2f}GB)")
-
-        # NVML 이용해 실시간 Util(%)
+        msg = f"[GPU-MON] step={trainer.global_step} gpu{idx} mem={mem:.2f}GB (max {mem_max:.2f}GB)"
         if self.nvml and self.handle:
             util = self.nvml.nvmlDeviceGetUtilizationRates(self.handle)
             meminfo = self.nvml.nvmlDeviceGetMemoryInfo(self.handle)
-            print(f"[GPU-MON] util={util.gpu}% mem_used={meminfo.used/1e9:.2f}GB/{meminfo.total/1e9:.2f}GB")
+            msg += f" util={util.gpu}% nvml_mem={meminfo.used/1e9:.2f}/{meminfo.total/1e9:.2f}GB"
+        print(msg)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def build_trainer(cfg, callbacks, name: str):
-    use_gpu = cfg.general.gpus > 0 and torch.cuda.is_available()
-    # devices = cfg.general.gpus if use_gpu else 1
-    devices = resolve_devices(cfg.general.gpus) if use_gpu else 0  # ← 변경
+    use_gpu = bool(cfg.general.gpus) and torch.cuda.is_available()
+    devices = resolve_devices(cfg.general.gpus) if use_gpu else 0
+    world = len(devices) if isinstance(devices, (list, tuple)) else int(devices)
 
-    # old ckpt 호환을 위해 find_unused_parameters=True 권장
-    # (기존에 strategy="ddp_find_unused_parameters_true" 쓰시던 부분을 대체)
+    # DDP/백엔드 선택 (Windows는 file:// + gloo + 루프백)
     strategy, backend = choose_ddp_strategy(devices, find_unused=True)
-    print(len(devices))
-    if len(devices) <= 1:
-        strategy = "auto" # auto, ddp, ddp_spawn, deepspeed
-        backend = None
+    if world <= 1:
+        strategy = "auto"; backend = None
 
-    print(f"[Dist] devices={devices}, backend={backend or 'single'} "
-          f"MASTER_ADDR={os.environ.get('MASTER_ADDR')} "
-          f"MASTER_PORT={os.environ.get('MASTER_PORT')} "
+    print(f"[Dist] devices={devices}, strategy={strategy if isinstance(strategy,str) else 'DDPStrategy'} "
+          f"backend={backend or 'single'} "
           f"GLOO_DEVICE_TRANSPORT={os.environ.get('GLOO_DEVICE_TRANSPORT')} "
           f"GLOO_SOCKET_IFNAME={os.environ.get('GLOO_SOCKET_IFNAME')}")
 
     trainer = Trainer(
         gradient_clip_val=cfg.train.clip_grad,
-        strategy=strategy,                                 # None | DDPStrategy
+        strategy=strategy,
         accelerator='gpu' if use_gpu else 'cpu',
         devices=devices,
         precision=getattr(cfg.trainer, "precision", "32-true") if hasattr(cfg, "trainer") else "32-true",
@@ -124,10 +106,17 @@ def build_trainer(cfg, callbacks, name: str):
         log_every_n_steps=50 if name != 'debug' else 1,
         logger=[],
     )
+    # 실제 init_method 확인(DDP일 때)
+    try:
+        init_m = getattr(trainer.strategy, "_init_method", None)
+        if init_m: print(f"[Dist] init_method={init_m}")
+    except Exception:
+        pass
     return trainer
 
+# ─────────────────────────────────────────────────────────────────────────────
+
 def get_resume(cfg, model_kwargs):
-    """ Resumes a run. It loads previous config without allowing to update keys (used for testing). """
     saved_cfg = cfg.copy()
     name = cfg.general.name + '_resume'
     resume = cfg.general.test_only
@@ -141,14 +130,10 @@ def get_resume(cfg, model_kwargs):
     cfg = utils.update_config_with_new_keys(cfg, saved_cfg)
     return cfg, model
 
-
 def get_resume_adaptive(cfg, model_kwargs):
-    """ Resumes a run. It loads previous config but allows to make some changes (used for resuming training)."""
     saved_cfg = cfg.copy()
-    # Fetch path to this file to get base path
     current_path = os.path.dirname(os.path.realpath(__file__))
     root_dir = current_path.split('outputs')[0]
-
     resume_path = os.path.join(root_dir, cfg.general.resume)
 
     if cfg.model.type == 'discrete':
@@ -163,11 +148,10 @@ def get_resume_adaptive(cfg, model_kwargs):
 
     new_cfg.general.resume = resume_path
     new_cfg.general.name = new_cfg.general.name + '_resume'
-
     new_cfg = utils.update_config_with_new_keys(new_cfg, saved_cfg)
     return new_cfg, model
 
-
+# ─────────────────────────────────────────────────────────────────────────────
 
 @hydra.main(version_base='1.3', config_path='../configs', config_name='config')
 def main(cfg: DictConfig):
@@ -196,7 +180,8 @@ def main(cfg: DictConfig):
             extra_features = DummyExtraFeatures()
         domain_features = DummyExtraFeatures()
 
-        dataset_infos.compute_input_output_dims(datamodule=datamodule, extra_features=extra_features,
+        dataset_infos.compute_input_output_dims(datamodule=datamodule,
+                                                extra_features=extra_features,
                                                 domain_features=domain_features)
 
         model_kwargs = {'dataset_infos': dataset_infos, 'train_metrics': train_metrics,
@@ -220,8 +205,7 @@ def main(cfg: DictConfig):
             datamodule = guacamol_dataset.GuacamolDataModule(cfg)
             dataset_infos = guacamol_dataset.Guacamolinfos(datamodule, cfg)
             train_smiles = None
-
-        elif dataset_config.name == 'moses':
+        elif dataset_config["name"] == 'moses':
             from datasets import moses_dataset
             datamodule = moses_dataset.MosesDataModule(cfg)
             dataset_infos = moses_dataset.MOSESinfos(datamodule, cfg)
@@ -236,15 +220,14 @@ def main(cfg: DictConfig):
             extra_features = DummyExtraFeatures()
             domain_features = DummyExtraFeatures()
 
-        dataset_infos.compute_input_output_dims(datamodule=datamodule, extra_features=extra_features,
+        dataset_infos.compute_input_output_dims(datamodule=datamodule,
+                                                extra_features=extra_features,
                                                 domain_features=domain_features)
 
-        if cfg.model.type == 'discrete':
-            train_metrics = TrainMolecularMetricsDiscrete(dataset_infos)
-        else:
-            train_metrics = TrainMolecularMetrics(dataset_infos)
+        train_metrics = (TrainMolecularMetricsDiscrete(dataset_infos)
+                         if cfg.model.type == 'discrete' else
+                         TrainMolecularMetrics(dataset_infos))
 
-        # We do not evaluate novelty during training
         sampling_metrics = SamplingMolecularMetrics(dataset_infos, train_smiles)
         visualization_tools = MolecularVisualization(cfg.dataset.remove_h, dataset_infos=dataset_infos)
 
@@ -252,14 +235,12 @@ def main(cfg: DictConfig):
                         'sampling_metrics': sampling_metrics, 'visualization_tools': visualization_tools,
                         'extra_features': extra_features, 'domain_features': domain_features}
     else:
-        raise NotImplementedError("Unknown dataset {}".format(cfg["dataset"]))
+        raise NotImplementedError(f"Unknown dataset {cfg['dataset']}")
 
     if cfg.general.test_only:
-        # When testing, previous configuration is fully loaded
         cfg, _ = get_resume(cfg, model_kwargs)
         os.chdir(cfg.general.test_only.split('checkpoints')[0])
     elif cfg.general.resume is not None:
-        # When resuming, we can override some parts of previous configuration
         cfg, _ = get_resume_adaptive(cfg, model_kwargs)
         os.chdir(cfg.general.resume.split('checkpoints')[0])
 
@@ -270,19 +251,22 @@ def main(cfg: DictConfig):
     else:
         model = LiftedDenoisingDiffusion(cfg=cfg, **model_kwargs)
 
-    callbacks = []
-    callbacks.append(GpuUsageMonitor(interval=1))  # 50배치마다 출력
+    callbacks = [GpuUsageMonitor(interval=1)]
     if cfg.train.save_model:
-        checkpoint_callback = ModelCheckpoint(dirpath=f"checkpoints/{cfg.general.name}",
-                                              filename='{epoch}',
-                                              monitor='val/epoch_NLL',
-                                              save_top_k=5,
-                                              mode='min',
-                                              every_n_epochs=1)
-        last_ckpt_save = ModelCheckpoint(dirpath=f"checkpoints/{cfg.general.name}", filename='last', every_n_epochs=1)
-        callbacks.append(last_ckpt_save)
-        callbacks.append(checkpoint_callback)
-
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=f"checkpoints/{cfg.general.name}",
+            filename='{epoch}',
+            monitor='val/epoch_NLL',
+            save_top_k=5,
+            mode='min',
+            every_n_epochs=1
+        )
+        last_ckpt_save = ModelCheckpoint(
+            dirpath=f"checkpoints/{cfg.general.name}",
+            filename='last',
+            every_n_epochs=1
+        )
+        callbacks += [last_ckpt_save, checkpoint_callback]
 
     if cfg.train.ema_decay > 0:
         ema_callback = utils.EMA(decay=cfg.train.ema_decay)
@@ -290,31 +274,15 @@ def main(cfg: DictConfig):
 
     name = cfg.general.name
     if name == 'debug':
-        print("[WARNING]: Run is called 'debug' -- it will run with fast_dev_run. ")
-
-    #use_gpu = cfg.general.gpus > 0 and torch.cuda.is_available()
-
-
+        print("[WARNING]: Run name is 'debug' → fast_dev_run enabled")
 
     trainer = build_trainer(cfg, callbacks, name)
-    #trainer = Trainer(gradient_clip_val=cfg.train.clip_grad,
-    #                  strategy="ddp_find_unused_parameters_true",  # Needed to load old checkpoints
-    #                  accelerator='gpu' if use_gpu else 'cpu',
-    #                  devices=cfg.general.gpus if use_gpu else 1,
-    #                  max_epochs=cfg.train.n_epochs,
-    #                  check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
-    #                  fast_dev_run=cfg.general.name == 'debug',
-    #                  enable_progress_bar=False,
-    #                  callbacks=callbacks,
-    #                  log_every_n_steps=50 if name != 'debug' else 1,
-    #                  logger = [])
 
     if not cfg.general.test_only:
         trainer.fit(model, datamodule=datamodule, ckpt_path=cfg.general.resume)
         if cfg.general.name not in ['debug', 'test']:
             trainer.test(model, datamodule=datamodule)
     else:
-        # Start by evaluating test_only_path
         trainer.test(model, datamodule=datamodule, ckpt_path=cfg.general.test_only)
         if cfg.general.evaluate_all_checkpoints:
             directory = pathlib.Path(cfg.general.test_only).parents[0]
@@ -327,7 +295,6 @@ def main(cfg: DictConfig):
                         continue
                     print("Loading checkpoint", ckpt_path)
                     trainer.test(model, datamodule=datamodule, ckpt_path=ckpt_path)
-
 
 if __name__ == '__main__':
     main()
