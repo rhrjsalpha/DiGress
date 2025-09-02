@@ -23,6 +23,11 @@ from src.dist_utils import choose_ddp_strategy
 from pytorch_lightning.callbacks import Callback
 import torch, os
 
+os.environ["MASTER_ADDR"] = "127.0.0.1"
+os.environ["MASTER_PORT"] = "29511"            # 충돌 시 숫자만 바꿔주세요
+os.environ["GLOO_DEVICE_TRANSPORT"] = "uv"
+os.environ["GLOO_SOCKET_IFNAME"] = "Ethernet"  # 1)에서 바꾼 이름; 안 바꿨다면 "이더넷"
+
 def resolve_devices(gpus_cfg):
     import torch, os, platform
     n = torch.cuda.device_count()
@@ -94,6 +99,7 @@ def build_trainer(cfg, callbacks, name: str):
     # old ckpt 호환을 위해 find_unused_parameters=True 권장
     # (기존에 strategy="ddp_find_unused_parameters_true" 쓰시던 부분을 대체)
     strategy, backend = choose_ddp_strategy(devices, find_unused=True)
+    print(len(devices))
     if len(devices) <= 1:
         strategy = "auto" # auto, ddp, ddp_spawn, deepspeed
         backend = None

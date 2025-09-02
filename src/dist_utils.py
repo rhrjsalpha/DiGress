@@ -37,17 +37,25 @@ def choose_ddp_strategy(devices: DevicesType, find_unused: bool = False):
     # --- Windows 핵심 픽스 ---
     # Windows 빌드의 gloo tcp 디바이스는 제한적 → uv 전송 강제
     if is_windows:
-        # 1) 로컬 루프백 고정
-        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-        os.environ.setdefault("MASTER_PORT", _pick_master_port())
-        os.environ.setdefault("GLOO_SOCKET_IFNAME", "이더넷")
-        # 2) Gloo 전송을 uv로
-        os.environ.setdefault("GLOO_DEVICE_TRANSPORT", "uv")
+        # 127.0.0.1 + 가용포트 강제
+        addr = "127.0.0.1"
+        port = os.environ.get("MASTER_PORT") or _pick_master_port()
+        os.environ["MASTER_ADDR"] = addr
+        os.environ["MASTER_PORT"] = str(port)
 
+        # Gloo 설정(Windows 권장)
+        os.environ["GLOO_DEVICE_TRANSPORT"] = "uv"
+        # NIC 이름: PowerShell의 Get-NetAdapter로 확인한 이름(가능하면 영문, 예: Ethernet)
+        os.environ["GLOO_SOCKET_IFNAME"] = os.environ.get("GLOO_SOCKET_IFNAME", "Ethernet")
+
+        # ★ 요기! env:// 대신 tcp:// 로 명시하여 호스트명 사용을 완전히 회피
+        init = f"tcp://127.0.0.1:{port}"
         backend = "gloo"
-        return DDPStrategy(process_group_backend=backend,
-                           find_unused_parameters=bool(find_unused),
-                           init_method="env://"), backend
+        return DDPStrategy(
+            process_group_backend=backend,
+            find_unused_parameters=bool(find_unused),
+            init_method=init,
+        ), backend
 
     # Linux는 NCCL 가능하면 NCCL, 아니면 gloo
     has_nccl = False
