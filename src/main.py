@@ -37,12 +37,20 @@ def resolve_devices(gpus_cfg):
     n = torch.cuda.device_count()
     if n == 0:
         return 0
-    if gpus_cfg in (-1, "auto", None, True):
-        return list(range(n))
-    if isinstance(gpus_cfg, int):
-        return list(range(min(gpus_cfg, n)))
+
+    if isinstance(gpus_cfg, int) and not isinstance(gpus_cfg, bool):
+        k = int(gpus_cfg)
+        if k <= 0:
+            return 0
+        if k == 1:
+            return 1
+        return list(range(min(k, n)))
+
     if isinstance(gpus_cfg, (list, tuple)):
-        return [int(i) for i in gpus_cfg if int(i) < n]
+        return [int(i) for i in gpus_cfg if 0 <= int(i) < n]
+
+    if gpus_cfg is True or gpus_cfg == -1 or str(gpus_cfg).lower() == "auto" or gpus_cfg is None:
+        return list(range(n))
     return 1
 
 class GpuUsageMonitor(Callback):
@@ -79,13 +87,23 @@ class GpuUsageMonitor(Callback):
 
 def build_trainer(cfg, callbacks, name: str):
     use_gpu = bool(cfg.general.gpus) and torch.cuda.is_available()
-    devices = resolve_devices(cfg.general.gpus) if use_gpu else 0
-    world = len(devices) if isinstance(devices, (list, tuple)) else int(devices)
-
-    # DDP/백엔드 선택 (Windows는 file:// + gloo + 루프백)
-    strategy, backend = choose_ddp_strategy(devices, find_unused=True)
-    if world <= 1:
-        strategy = "auto"; backend = None
+    print(use_gpu)
+    # 1) 요청 장치 해석
+    requested = cfg.general.gpus
+    print(requested)
+    dev_spec = resolve_devices(requested) if use_gpu else 0  # ex) [0,1] or [0] or 1
+    print(dev_spec)
+    # 2) world 계산
+    world = len(dev_spec) if isinstance(dev_spec, (list, tuple)) else int(dev_spec)
+    print(world)
+    # 3)
+    if not use_gpu or world <= 1:
+        devices = 1 if use_gpu else 1          # GPU 1장 or CPU 1개
+        strategy = "auto"                      # 절대 DDP 안 켜짐
+        backend = None
+    else:
+        devices = dev_spec                     # ex) [0,1,2,3]
+        strategy, backend = choose_ddp_strategy(devices, find_unused=True)
 
     print(f"[Dist] devices={devices}, strategy={strategy if isinstance(strategy,str) else 'DDPStrategy'} "
           f"backend={backend or 'single'} "
@@ -93,25 +111,26 @@ def build_trainer(cfg, callbacks, name: str):
           f"GLOO_SOCKET_IFNAME={os.environ.get('GLOO_SOCKET_IFNAME')}")
 
     trainer = Trainer(
-        gradient_clip_val=cfg.train.clip_grad,
-        strategy=strategy,
         accelerator='gpu' if use_gpu else 'cpu',
-        devices=devices,
+        devices=devices,                       # ← 단일이면 정수 1
+        strategy=strategy,                     # ← 단일이면 'auto'
         precision=getattr(cfg.trainer, "precision", "32-true") if hasattr(cfg, "trainer") else "32-true",
         max_epochs=cfg.train.n_epochs,
         check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
+        gradient_clip_val=cfg.train.clip_grad,
         fast_dev_run=(name == 'debug'),
         enable_progress_bar=False,
         callbacks=callbacks,
         log_every_n_steps=50 if name != 'debug' else 1,
         logger=[],
     )
-    # 실제 init_method 확인(DDP일 때)
+
     try:
         init_m = getattr(trainer.strategy, "_init_method", None)
         if init_m: print(f"[Dist] init_method={init_m}")
     except Exception:
         pass
+
     return trainer
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
-# src/dist_utils.py
-import os, sys, torch, tempfile
+## src/dist_utils.py (수정판)
+import os, sys, torch, platform
 from typing import Union, Sequence
 from pytorch_lightning.strategies import DDPStrategy
 
@@ -15,54 +15,41 @@ def _world_size(devices: DevicesType) -> int:
     except Exception:
         return 0
 
-def _rdzv_file() -> str:
-    """
-    모든 랭크가 동일하게 볼 수 있는 고정 경로.
-    Hydra가 작업 디렉터리를 바꿔도 ranks는 동일 cwd를 상속하므로
-    현재 작업 디렉터리에 두는 것이 가장 안전함.
-    """
-    base = os.getcwd() if os.getcwd() else tempfile.gettempdir()
-    path = os.path.join(base, ".pl_ddp_store")
-    # Windows file://에서 역슬래시 이슈 회피
-    return "file:///" + path.replace("\\", "/")
+def _is_wsl() -> bool:
+    try:
+        return (
+            "microsoft" in platform.release().lower()
+            or "wsl" in platform.release().lower()
+            or os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop")
+            or os.environ.get("WSL_DISTRO_NAME")
+        )
+    except Exception:
+        return False
 
 def choose_ddp_strategy(devices: DevicesType, find_unused: bool = False):
-    """
-    devices: int | list[int] | None  → Lightning Trainer(devices=...)와 동일 의미
-    returns: (strategy, backend_str)
-    """
     world = _world_size(devices)
     if world <= 1:
-        return "auto", None  # 싱글 GPU/CPU는 자동
+        return "auto", None  # 싱글
 
-    is_windows = sys.platform.startswith("win")
-    is_linux   = sys.platform.startswith("linux")
-    has_cuda   = torch.cuda.is_available()
+    # Windows → gloo 고정(루프백은 main.py에서 이미 세팅)
+    if sys.platform.startswith("win"):
+        return DDPStrategy(process_group_backend="gloo",
+                           find_unused_parameters=bool(find_unused)), "gloo"
 
-    # 공통: rendezvous를 file://로 고정 → MASTER_ADDR/PORT 의존 제거
-    init = _rdzv_file()
+    # Linux/WSL: 기본 nccl, 필요 시 gloo로 강제 가능
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
 
-    if is_windows:
-        # Windows는 Gloo만 사용 가능. 호스트명 경로를 피하기 위해 루프백 NIC + uv 강제.
-        os.environ.setdefault("GLOO_DEVICE_TRANSPORT", "uv")
-        os.environ.setdefault("GLOO_SOCKET_IFNAME", "Loopback Pseudo-Interface 1")  # 환경에서 덮어쓸 수 있음
-        return DDPStrategy(
-            process_group_backend="gloo",
-            init_method=init,
-            find_unused_parameters=bool(find_unused),
-        ), "gloo"
+    # WSL 안정화 옵션
+    if _is_wsl():
+        os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+        os.environ.setdefault("NCCL_IB_DISABLE", "1")
+        os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+        os.environ.setdefault(
+            "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128"
+        )
+        # 문제가 계속되면 환경변수로 gloo 강제 (선택)
+        if os.environ.get("PL_FORCE_GLOO", "0") == "1":
+            backend = "gloo"
 
-    # Linux: NCCL 가능 시 NCCL, 아니면 gloo
-    has_nccl = False
-    try:
-        import torch.distributed as dist
-        has_nccl = getattr(dist, "is_nccl_available", lambda: False)()
-    except Exception:
-        pass
-
-    backend = "nccl" if (is_linux and has_cuda and has_nccl) else "gloo"
-    return DDPStrategy(
-        process_group_backend=backend,
-        init_method=init,
-        find_unused_parameters=bool(find_unused),
-    ), backend
+    return DDPStrategy(process_group_backend=backend,
+                       find_unused_parameters=bool(find_unused)), backend
