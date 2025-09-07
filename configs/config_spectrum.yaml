@@ -1,0 +1,44 @@
+general:
+  name: spectrum_regression
+  gpus: 1          # 0|1|auto|[0,1]
+  check_val_every_n_epochs: 1
+  test_only: null
+  gpu_monitor: false
+  gpu_monitor_interval: 50
+
+trainer:
+  precision: "32-true"
+
+train:
+  n_epochs: 50
+  lr: 2e-4
+  clip_grad: 0.0
+  batch_size: 64
+  num_workers: 0
+  save_model: true
+
+dataset:
+  name: csvspec
+  train_csv: "../data/csv/EM_stratified_train_clustered_resplit_with_mu_eps.csv"
+  val_csv: ""    # 빈 문자열 => train에서 90/10 split
+  test_csv:  "../data/csv/EM_stratified_test_clustered_resplit_with_mu_eps.csv"
+  spec_start: 200
+  spec_end: 800
+  solvent_vocab: ["solid","liquid","gas"]
+  ph_vocab: ["acidic","basic","neutral"]
+
+model:
+  hidden: 256
+  layers: 4
+  dropout: 0.1
+
+hydra:
+  run:
+    dir: ${hydra:runtime.cwd}/outputs_spectrum/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${hydra:runtime.cwd}/outputs_spectrum/multirun/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}
+
+
+
+

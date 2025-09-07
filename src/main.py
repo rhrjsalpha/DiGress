@@ -270,7 +270,7 @@ def main(cfg: DictConfig):
     else:
         model = LiftedDenoisingDiffusion(cfg=cfg, **model_kwargs)
 
-    callbacks = [GpuUsageMonitor(interval=1)]
+    callbacks = [] # GpuUsageMonitor(interval=1)
     if cfg.train.save_model:
         checkpoint_callback = ModelCheckpoint(
             dirpath=f"checkpoints/{cfg.general.name}",
