@@ -123,8 +123,6 @@ class EigenFeatures:
         L = torch.nan_to_num(L, nan=0.0, posinf=0.0, neginf=0.0)
         L = 0.5 * (L + L.transpose(-1, -2))  # 완전 대칭화
 
-
-
         if self.mode == 'eigenvalues':
             eigvals, eigvectors = _safe_eigh(L)
             # eigvals = torch.linalg.eigvalsh(L)        # bs, n
