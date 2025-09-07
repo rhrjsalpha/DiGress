@@ -26,6 +26,12 @@ BOND_TYPES = {
     Chem.rdchem.BondType.AROMATIC: 3,
 }
 
+def split_y(batch_y: torch.Tensor, spec_len: int):
+    # batch_y: (B, L)
+    y_spec = batch_y[:, :spec_len]
+    cond = batch_y[:, spec_len:] if batch_y.size(1) > spec_len else None
+    return y_spec, cond
+
 def one_hot(x, choices):
     v = [0] * len(choices)
     if x in choices:
@@ -204,7 +210,11 @@ class CSVSpecDataset(InMemoryDataset):
 
             y_globals = self._encode_globals(row, stats)
             y = torch.cat([y_spec, y_globals], dim=0) if y_globals.numel() > 0 else y_spec
-            g.y = y
+
+            # g.y = y
+            # y를 **1D 벡터 (L,)**로 저장하면, PyG는 배치 시 dim=0으로 그냥 이어 붙임
+            # 학습 코드에서는 (B, L)을 기대하고 batch_y[:, :spec_len]처럼 2D 인덱싱을 하니 에러(too many indices for tensor of dimension 1)
+            g.y = y.unsqueeze(0) # 1D -> 2D
 
             # (옵션) sample id
             for key in ("ID", "id", "Name", "name"):
@@ -437,6 +447,20 @@ def main():
             print(f"  y.spec head={spec_head} ... tail={spec_tail}")
             if g_len > 0:
                 g_head = d.y[spec_len:spec_len + min(10, g_len)].tolist()
+                print(f"  y.globals head={g_head}")
+
+            d = ds[idx]
+            y_vec = d.y.view(-1)  # (L,)
+            spec_len = args.spec_end - args.spec_start + 1
+            g_len = y_vec.numel() - spec_len
+            print(f"y.shape={tuple(d.y.shape)}  (stored as (1, L))")
+            print(f"(spec={spec_len}, globals={g_len})")
+
+            spec_head = y_vec[:min(5, spec_len)].tolist()
+            spec_tail = y_vec[max(0, spec_len - 5):spec_len].tolist()
+            print(f"  y.spec head={spec_head} ... tail={spec_tail}")
+            if g_len > 0:
+                g_head = y_vec[spec_len:spec_len + min(10, g_len)].tolist()
                 print(f"  y.globals head={g_head}")
 
     # ---- 한 배치 로딩 & 요약 ----
