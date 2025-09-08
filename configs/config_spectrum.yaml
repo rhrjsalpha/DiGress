@@ -10,12 +10,38 @@ trainer:
   precision: "32-true"
 
 train:
-  n_epochs: 500
+  accelerator: gpu
+  devices: 1            # GPU 2장 사용. 전부면 -1
+  strategy: ddp         # 또는 ddp_find_unused_false
+  num_nodes: 1
+  precision: 32 # 원하면 16-mixed
+
+  #############
+  n_epochs: 50
+  batch_size: 8
   lr: 2e-4
-  clip_grad: 0.0
-  batch_size: 64
   num_workers: 0
   save_model: true
+  clip_grad: 1.0
+  clip_algo: "norm"
+
+  # 멀티로스 + GradNorm 옵션
+  losses: ["SID", "MAE"]      # ["MSE","MAE","SOFTDTW","SID"] 등
+  use_gradnorm: true
+  alpha: 0.12
+  softdtw_gamma: 0.2
+
+  # 선택 기본값
+  optimizer: adamw
+  weight_decay: 1e-12
+  seed: 0
+  progress_bar: false
+  ema_decay: 0
+  milestones: [ 10, 50, 100 ]     # 이 에폭마다 평가 & 그림 저장
+  milestone_n_samples: 32       # plot_all=false일 때 저장할 개수
+  milestone_plot_all: false     # true면 해당 split 전체 저장
+  milestone_eval_test: false    # true면 test도 함께 평가/저장
+  cv_mode: false                # CV가 아니면 false
 
 dataset:
   name: csvspec
@@ -26,11 +52,16 @@ dataset:
   spec_end: 800
   solvent_vocab: ["solid","liquid","gas"]
   ph_vocab: ["acidic","basic","neutral"]
+  smiles_col: SMILES     # CSV에 SMILES 컬럼이 있으면
+  inchi_col: InChI       # InChI 컬럼명
+  add_h: false
 
 model:
-  hidden: 512
-  layers: 12
+  backend: digress         # gnn | digress
+  hidden: 256
+  layers: 4
   dropout: 0.1
+  n_head: 8            # digress에서만 사용
 
 hydra:
   run:

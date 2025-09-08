@@ -53,14 +53,14 @@ def edge_feature(bond: Chem.Bond) -> torch.Tensor:
     return torch.tensor(feat, dtype=torch.float32)
 
 
-def mol_from_row(row: pd.Series, smiles_col: Optional[str], inchi_col: Optional[str]) -> Optional[Chem.Mol]:
-    """SMILES 우선, 실패 시 InChI로 시도."""
+def mol_from_row(row, smiles_col: Optional[str], inchi_col: Optional[str], add_h: bool = False) -> Optional[Chem.Mol]:
+    """SMILES 우선, 실패 시 InChI. add_h=True면 수소 추가."""
     mol = None
     if smiles_col and isinstance(row.get(smiles_col), str):
         mol = Chem.MolFromSmiles(row[smiles_col])
     if mol is None and inchi_col and isinstance(row.get(inchi_col), str):
         mol = Chem.MolFromInchi(row[inchi_col])
-    if mol is not None:
+    if mol is not None and add_h:
         try:
             mol = Chem.AddHs(mol)
         except Exception:
@@ -121,6 +121,7 @@ class CSVSpecDataset(InMemoryDataset):
         spectrum_fill_eps: float = 1e-8,  # 결측 채움용 작은 값
         fixed_vocabs: Optional[Dict[str, List[str]]] = None,  # 예) {"solvent_phase":["solid","liquid","gas"], "pH_label":["acidic","basic","neutral"]}
         boolean_cols: Optional[List[str]] = None,             # 예) ["is_qm"]
+        add_h: bool = False,
     ):
         self.csv_path = str(csv_path)
         self.stage = stage
@@ -130,6 +131,7 @@ class CSVSpecDataset(InMemoryDataset):
         self.global_cols = global_cols or []
         self.stats_path = stats_path or (str(Path(csv_path).with_suffix("")) + "_stats.json")
         self.spectrum_fill_eps = spectrum_fill_eps
+        self.add_h = bool(add_h)
         # 사용자 지정 인코딩 설정
         self.fixed_vocabs: Dict[str, List[str]] = {k: [str(t) for t in v] for k, v in (fixed_vocabs or {}).items()}
         self.boolean_cols: List[str] = list(boolean_cols or [])
@@ -164,7 +166,8 @@ class CSVSpecDataset(InMemoryDataset):
 
     @property
     def processed_file_names(self) -> List[str]:
-        return [f"{Path(self.csv_path).stem}_{self.stage}.pt"]
+        stem = f"{Path(self.csv_path).stem}_{self.stage}_addH{int(self.add_h)}.pt"
+        return [stem]
 
     def process(self) -> None:
         df = pd.read_csv(self.csv_path)
@@ -196,10 +199,23 @@ class CSVSpecDataset(InMemoryDataset):
 
         data_list: List[Data] = []
         for ridx, row in df.iterrows():
-            mol = mol_from_row(row, self.smiles_col, self.inchi_col)
+            mol = mol_from_row(row, self.smiles_col, self.inchi_col, add_h=self.add_h)
             if mol is None:
                 continue
             g = build_graph(mol)
+
+            try:
+                # 우선 CSV의 원문을 쓰고, 없으면 RDKit로 생성한 canonical SMILES를 넣음
+                if self.smiles_col and isinstance(row.get(self.smiles_col), str):
+                    g.smiles = str(row[self.smiles_col])
+                else:
+                    from rdkit.Chem import rdchem
+                    g.smiles = Chem.MolToSmiles(Chem.RemoveHs(mol))
+
+                if self.inchi_col and isinstance(row.get(self.inchi_col), str):
+                    g.inchi = str(row[self.inchi_col])
+            except Exception:
+                pass
 
             # ✅ object → float32 문제 회피: 미리 만든 2D 매트릭스에서 꺼냄
             y_spec_np = spec_mat[ridx]
