@@ -16,23 +16,60 @@ class CEPerClass(Metric):
         self.binary_cross_entropy = torch.nn.BCELoss(reduction='sum')
 
     def update(self, preds: Tensor, target: Tensor) -> None:
-        """Update state with predictions and targets.
-        Args:
-            preds: Predictions from model   (bs, n, d) or (bs, n, n, d)
-            target: Ground truth values     (bs, n, d) or (bs, n, n, d)
         """
-        target = target.reshape(-1, target.shape[-1])
-        mask = (target != 0.).any(dim=-1)
+        preds: (B, N, C) or (B, N, N, C) or (K, C)  # K = 마스크된 유효 항목 수
+        target: (B, N, C) or (B, N, N, C) or (K, C) # 원-핫(0/1)
+        """
+        # 확률(특정 클래스)의 텐서 준비
+        probs_class = self.softmax(preds)[..., self.class_id]  # (B,N) / (B,N,N) / (K,)
 
-        prob = self.softmax(preds)[..., self.class_id]
-        prob = prob.flatten()[mask]
+        # --- 타깃(해당 클래스의 0/1)과 마스크 만들기 ---
+        # target이 원-핫이므로, 마지막 축에 대해 '0이 아닌 항목이 하나라도 있으면 유효' 로 간주
+        if target.dim() >= 2:
+            # (B,N,C) 또는 (B,N,N,C) 또는 (K,C)
+            target_class = target[..., self.class_id].to(probs_class.dtype)  # 동일 rank, 동일 broadcast 축
+            valid_mask = (target != 0.).any(dim=-1)  # (B,N) / (B,N,N) / (K,)
+        else:
+            raise ValueError(f"Unexpected target shape: {target.shape}")
 
-        target = target[:, self.class_id]
-        target = target[mask]
+        # --- preds/target가 이미 마스크되어 있는 경우와 아닌 경우를 모두 처리 ---
+        # 케이스 A) preds가 2D (K,) 또는 (K,C) → 이미 마스크된 상태
+        if probs_class.dim() == 1:
+            probs_flat = probs_class  # (K,)
+            if target_class.dim() >= 2:
+                # target이 (K,) 이면 그대로, (B,N[,*])이면 유효 항만 골라 길이 K가 되도록 맞춤
+                if target_class.dim() == 1:
+                    tgt_flat = target_class
+                else:
+                    tgt_full = target_class.reshape(-1)
+                    m_full = valid_mask.reshape(-1)
+                    tgt_flat = tgt_full[m_full]
+            else:
+                tgt_flat = target_class
 
-        output = self.binary_cross_entropy(prob, target)
+        # 케이스 B) preds가 3D/4D → 아직 마스크 전, 평탄화 후 동일 마스크 적용
+        else:
+            probs_flat = probs_class.reshape(-1)
+            tgt_flat = target_class.reshape(-1)
+            m_flat = valid_mask.reshape(-1)
+            probs_flat = probs_flat[m_flat]
+            tgt_flat = tgt_flat[m_flat]
+
+        # --- 길이 불일치 방지(안전 가드) ---
+        if probs_flat.numel() == 0:
+            return
+        if probs_flat.numel() != tgt_flat.numel():
+            m = min(probs_flat.numel(), tgt_flat.numel())
+            probs_flat = probs_flat[:m]
+            tgt_flat = tgt_flat[:m]
+
+        # --- 수치 안전화 후 BCE 누적 ---
+        probs_flat = torch.clamp(probs_flat, 1e-12, 1. - 1e-12)  # log(0) 방지
+        tgt_flat = tgt_flat.to(probs_flat.dtype)
+
+        output = self.binary_cross_entropy(probs_flat, tgt_flat)  # reduction='sum'
         self.total_ce += output
-        self.total_samples += prob.numel()
+        self.total_samples += probs_flat.numel()
 
     def compute(self):
         return self.total_ce / self.total_samples

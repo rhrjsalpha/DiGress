@@ -3,7 +3,7 @@ defaults:
     - general : general_default
     - model : discrete
     - train : train_default
-    - dataset : qm9
+    - dataset : csv_spec
 
 monitor:
   gpu_interval: 0        # 0 이면 끔, N이면 N step마다 출력

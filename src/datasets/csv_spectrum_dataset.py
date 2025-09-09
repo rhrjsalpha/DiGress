@@ -143,6 +143,7 @@ class CSVSpecDataset(InMemoryDataset):
         # PyTorch 2.6: weights_only=False 명시
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
+
     def _ensure_stats(self) -> None:
         """stats.json이 없으면 stage와 상관없이 즉시 생성한다."""
         sp = Path(self.stats_path)
@@ -159,6 +160,23 @@ class CSVSpecDataset(InMemoryDataset):
 
         sp.write_text(json.dumps(stats, ensure_ascii=False, indent=2))
 
+    @property
+    def y_dim(self) -> int:
+        """전역 y(스펙트럼+글로벌) 차원. g.y는 (1, L)로 저장되므로 L을 반환."""
+        y0 = self[0].y
+        return int(y0.size(-1) if y0.dim() >= 2 else y0.numel())
+
+    @property
+    def spec_len(self) -> int:
+        """스펙트럼 길이(파장 구간 개수)."""
+        return len(self.spec_cols)
+
+    @property
+    def num_node_features(self) -> int:
+        """노드 특성 차원(one-hot 원자 등). 일부 코드가 기대할 수 있어 제공."""
+        x0 = self[0].x
+        return int(x0.size(-1)) if x0 is not None else 0
+
     # raw 체크 우회(원시 파일을 따로 요구하지 않도록 빈 리스트 반환)
     @property
     def raw_file_names(self) -> List[str]:
@@ -170,7 +188,7 @@ class CSVSpecDataset(InMemoryDataset):
         return [stem]
 
     def process(self) -> None:
-        df = pd.read_csv(self.csv_path)
+        df = pd.read_csv(self.csv_path, low_memory=False)
 
         # 스펙트럼 컬럼 존재 확인
         missing = [c for c in self.spec_cols if c not in df.columns]
@@ -333,6 +351,8 @@ class CSVSpecDataset(InMemoryDataset):
         if s in {"0", "f", "false", "n", "no"}:
             return 0.0
         return 0.0
+
+
 
 
 # ==== PyCharm에서 바로 실행 가능한 러너 ====
