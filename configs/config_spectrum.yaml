@@ -7,17 +7,17 @@ general:
   gpu_monitor_interval: 50
 
 trainer:
-  precision: "32-true"
+  precision: "16-mixed" # "16-mixed" "32-true"
 
 train:
   accelerator: gpu
-  devices: 1            # GPU 2장 사용. 전부면 -1
+  devices: 2            # GPU 2장 사용. 전부면 -1
   strategy: ddp         # 또는 ddp_find_unused_false
   num_nodes: 1
   precision: 32 # 원하면 16-mixed
 
   #############
-  n_epochs: 50
+  n_epochs: 500
   batch_size: 8
   lr: 2e-4
   num_workers: 0
@@ -26,7 +26,7 @@ train:
   clip_algo: "norm"
 
   # 멀티로스 + GradNorm 옵션
-  losses: ["SID", "MAE"]      # ["MSE","MAE","SOFTDTW","SID"] 등
+  losses: ["MSE","MAE","SOFTDTW","SID"]      # ["MSE","MAE","SOFTDTW","SID"] 등
   use_gradnorm: true
   alpha: 0.12
   softdtw_gamma: 0.2
@@ -37,17 +37,17 @@ train:
   seed: 0
   progress_bar: false
   ema_decay: 0
-  milestones: [ 10, 50, 100 ]     # 이 에폭마다 평가 & 그림 저장
+  milestones: [ 10, 50, 100, 200, 300, 400, 500, 600 ]     # 이 에폭마다 평가 & 그림 저장
   milestone_n_samples: 32       # plot_all=false일 때 저장할 개수
-  milestone_plot_all: false     # true면 해당 split 전체 저장
-  milestone_eval_test: false    # true면 test도 함께 평가/저장
+  milestone_plot_all: true     # true면 해당 split 전체 저장
+  milestone_eval_test: true    # true면 test도 함께 평가/저장
   cv_mode: false                # CV가 아니면 false
 
 dataset:
   name: csvspec
-  train_csv: "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps.csv"
+  train_csv: "/root/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps.csv"
   val_csv: ""    # 빈 문자열 => train에서 90/10 split
-  test_csv:  "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_test_clustered_resplit_with_mu_eps.csv"
+  test_csv:  "/root/PycharmProjects/DiGress/data/csv/EM_stratified_test_clustered_resplit_with_mu_eps.csv"
   spec_start: 200
   spec_end: 800
   solvent_vocab: ["solid","liquid","gas"]
@@ -59,9 +59,9 @@ dataset:
 model:
   backend: digress         # gnn | digress
   hidden: 256
-  layers: 4
+  layers: 4 # 4
   dropout: 0.1
-  n_head: 8            # digress에서만 사용
+  n_head: 8           # digress에서만 사용
 
 hydra:
   run:

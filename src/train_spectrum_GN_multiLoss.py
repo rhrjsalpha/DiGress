@@ -2,10 +2,6 @@
 # X,E,y→X′,E′,y′를 갱신하는 백본(GNN/DiGress)을 선택해 그래프 수준 y를 얻고,
 # 이를 MLP로 스펙트럼(연속 nm 그리드)으로 회귀. 멀티로스 + GradNorm + 로깅/그림 저장.
 
-import os
-os.environ.setdefault("GLOO_DEVICE_TRANSPORT", "uv")
-os.environ.setdefault("GLOO_SOCKET_IFNAME", "Loopback Pseudo-Interface 1")
-
 import time
 import warnings
 from pathlib import Path
@@ -30,6 +26,25 @@ from rdkit.Chem import Draw
 from src.custom_loss.SID_loss import sid_loss
 from src.custom_loss.soft_dtw_cuda import SoftDTW
 from src.custom_loss.GradNorm import GradNorm
+
+import platform
+import os
+
+if platform.system() == "Windows":
+    os.environ.setdefault("GLOO_DEVICE_TRANSPORT", "uv")
+    os.environ.setdefault(
+        "GLOO_SOCKET_IFNAME",
+        os.environ.get("GLOO_SOCKET_IFNAME", "Loopback Pseudo-Interface 1"),
+    )
+else:
+    # 리눅스: 윈도우용 gloo 설정 제거 + NCCL 변수 제거(이 스크립트는 gloo만 사용)
+    os.environ.pop("GLOO_DEVICE_TRANSPORT", None)
+    os.environ.pop("GLOO_SOCKET_IFNAME", None)
+    for k in (
+        "NCCL_DEBUG", "TORCH_NCCL_BLOCKING_WAIT", "TORCH_NCCL_ASYNC_ERROR_HANDLING",
+        "NCCL_SHM_DISABLE", "NCCL_P2P_DISABLE"
+    ):
+        os.environ.pop(k, None)
 
 torch.set_float32_matmul_precision("high")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -325,13 +340,25 @@ class CSVSpecDataModule(pl.LightningDataModule):
         self.edge_dim = int(self.ds_train[0].edge_attr.size(1)) if self.ds_train[0].edge_attr is not None else 0
 
     def train_dataloader(self):
-        return DataLoader(self.ds_train, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+        return DataLoader(
+            self.ds_train, batch_size=self.batch_size, shuffle=True,
+            num_workers=self.num_workers, pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+        )
 
     def val_dataloader(self):
-        return DataLoader(self.ds_val, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+        return DataLoader(
+            self.ds_val, batch_size=self.batch_size, shuffle=False,
+            num_workers=self.num_workers, pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+        )
 
     def test_dataloader(self):
-        return DataLoader(self.ds_test, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+        return DataLoader(
+            self.ds_test, batch_size=self.batch_size, shuffle=False,
+            num_workers=self.num_workers, pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+        )
 
 
 # ============================== 두 개의 백본 ==============================
@@ -521,6 +548,9 @@ class SpectrumModule(pl.LightningModule):
             elif name == "SID":
                 out[name] = sid_loss(y_pred, y_true, mask, eps=1e-6, reduction="mean_valid")
             elif name == "SOFTDTW":
+                if self.softdtw is None:
+                    # 현재 텐서가 놓인 장치에 맞춰 최초 1회만 생성 (rank별 올바른 GPU에 생성됨)
+                    self.softdtw = SoftDTW(use_cuda=y_pred.is_cuda, **self._softdtw_kwargs)
                 out[name] = self.softdtw(y_pred.unsqueeze(-1), y_true.unsqueeze(-1)).mean()
             else:
                 raise ValueError(f"Unknown loss: {name}")
@@ -608,6 +638,13 @@ class EpochPrinter(Callback):
                 trainer.logger.log_metrics({"epoch_time_sec": elapsed}, step=trainer.current_epoch)
             except Exception:
                 pass
+    def on_fit_start(self, trainer, pl_module):
+        import os, torch
+        lr = int(os.environ.get("LOCAL_RANK", -1))
+        cd = torch.cuda.current_device() if torch.cuda.is_available() else -1
+        total = torch.cuda.get_device_properties(cd).total_memory / 1e9 if cd >= 0 else 0
+        free = torch.cuda.mem_get_info()[0] / 1e9 if cd >= 0 else 0
+        print(f"[RANK{lr}] cuda_device={cd}  free={free:.2f}GB / total={total:.2f}GB")
 
 
 class ValPlotCallback(pl.callbacks.Callback):
@@ -616,6 +653,8 @@ class ValPlotCallback(pl.callbacks.Callback):
         self.n_samples = n_samples
 
     def on_validation_epoch_end(self, trainer, pl_module):
+        if not trainer.is_global_zero:  # ← 추가
+            return
         epoch = trainer.current_epoch
         if epoch % self.every != 0:
             return
@@ -662,34 +701,49 @@ def build_trainer(cfg, extra_callbacks: Optional[List[Callback]] = None):
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
 
-    # --- DDP 전략 선택 (권장: find_unused_parameters=False) ---
-    strategy_cfg = getattr(cfg.train, "strategy", "auto")
-    if strategy_cfg in ("ddp", "ddp_find_unused_false"):
+    import platform
+    is_windows = platform.system() == "Windows"
+
+    # YAML → Trainer 전달값 해석
+    accel = getattr(cfg.train, "accelerator", "gpu")
+    yaml_dev = getattr(cfg.train, "devices", 1)  # 2 또는 [0,1]
+    num_nodes = int(getattr(cfg.train, "num_nodes", 1))
+    precision = getattr(cfg.trainer, "precision", getattr(cfg.train, "precision", 32))
+    strategy_cfg = str(getattr(cfg.train, "strategy", "auto"))
+
+    # ▶ 요구사항: Windows는 항상 1GPU, Linux는 YAML 그대로
+    devices = 1 if is_windows else yaml_dev
+
+    # ▶ OS별 DDP 백엔드 선택
+    from pytorch_lightning.strategies import DDPStrategy
+    if devices != 1 and strategy_cfg in ("ddp", "ddp_find_unused_false"):
         strategy = DDPStrategy(
-            find_unused_parameters=(strategy_cfg != "ddp_find_unused_false"),
+            process_group_backend="gloo", # backend,
+            find_unused_parameters=False,
             gradient_as_bucket_view=True,
+            static_graph=True,
+            broadcast_buffers=False,
+            bucket_cap_mb=12,
         )
     else:
-        strategy = strategy_cfg  # "auto" 등
+        strategy = "auto"
 
-    loggers = [CSVLogger(save_dir=str(RUN_DIR), name="pl_logs", version="")]
-    try:
-        import tensorboard  # noqa
-        loggers.append(TensorBoardLogger(str(Path(PROJECT_ROOT) / "tb_logs"), name=job_name))
-    except Exception:
-        print("[WARN] TensorBoard not found; using CSVLogger only.")
+    print(f"[DIST] system={'Windows' if is_windows else 'Linux'} "
+          f"→ backend={getattr(strategy, 'process_group_backend', strategy)} devices={devices}")
 
     trainer = pl.Trainer(
-        max_epochs=epochs,
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        devices=1,
-        logger=loggers,
+        max_epochs=int(getattr(cfg.train, "n_epochs", 200)),
+        accelerator=accel,
+        devices=devices,
+        num_nodes=num_nodes,
+        strategy=strategy,  # ★ 반드시 전달
+        precision=precision,
+        #logger=loggers,
         callbacks=callbacks,
         enable_progress_bar=True,
         default_root_dir=str(PROJECT_ROOT),
     )
     return trainer
-
 
 # ============================== Hydra 엔트리 ==============================
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config_spectrum")
@@ -738,6 +792,11 @@ def main(cfg: DictConfig):
 
     trainer = build_trainer(cfg, extra_callbacks=callbacks)
     model = SpectrumModule(cfg, spec_len=dm.spec_len, cond_dim=dm.cond_dim, backbone=backbone)
+    print("cuda_count=", torch.cuda.device_count(),
+          "CUDA_VISIBLE_DEVICES=", os.environ.get("CUDA_VISIBLE_DEVICES"))
+    print("world_size=", trainer.world_size,
+          "num_devices=", trainer.num_devices,
+          "local_rank=", getattr(trainer, "local_rank", None))
 
     trainer.fit(model, datamodule=dm)
     trainer.test(model, datamodule=dm, ckpt_path="best")

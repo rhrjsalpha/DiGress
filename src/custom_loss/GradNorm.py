@@ -28,6 +28,12 @@ class GradNorm:
         #device = self.lambdas.device
         #print("device",device)
         # print("losses",losses)
+
+        device = losses.device
+        dtype = losses.dtype
+        if self.lambdas.device != device or self.lambdas.dtype != dtype:
+            self.lambdas = self.lambdas.to(device=device, dtype=dtype)
+
         if isinstance(losses, list):
             losses = torch.stack(losses)
 
@@ -58,7 +64,8 @@ class GradNorm:
 
         # Compute adjusted loss weights
         adjusted_factor = (grads1 / grads1.mean()) * r_i
-        loss_weights = self.lambdas * (adjusted_factor ** self.alpha)
+        #loss_weights = self.lambdas * (adjusted_factor ** self.alpha)
+        loss_weights = self.lambdas * (adjusted_factor.to(device=device, dtype=dtype) ** self.alpha)
 
         # Normalize weights to maintain the sum to num_losses
         loss_weights = (self.num_losses * loss_weights) / loss_weights.sum()
@@ -83,13 +90,14 @@ class GradNorm_new:
     def __init__(self, num_losses, alpha=0.12):
         self.num_losses = num_losses  # 사용할 손실 함수 개수
         self.alpha = alpha  # GradNorm의 스케일링 조정 계수
-        self.lambdas = nn.Parameter(torch.ones(num_losses, dtype=torch.float32, device="cuda"))  # 손실 가중치 벡터 (초기값 1)
+        self.lambdas = torch.ones(num_losses, dtype=torch.float32) # 손실 가중치 벡터 (초기값 1)
         self.initial_losses = None  # 초기 손실 저장
 
     def compute_weights(self, losses, model):
         """
         Gradient Norm 기반 가중치 조정 (첫 번째 epoch은 gradient만 사용)
         """
+
         if isinstance(losses, list):
             losses = torch.cat([loss.unsqueeze(0) for loss in losses])
 
