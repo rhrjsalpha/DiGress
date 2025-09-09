@@ -5,7 +5,7 @@
 import time
 import warnings
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 import hydra
 from omegaconf import DictConfig
@@ -54,7 +54,7 @@ RUN_DIR = Path(os.getcwd())
 
 # ======================== Milestone 평가 + 그림 저장 =========================
 # === 교체/추가 ===
-class DualMilestoneEval(Callback):
+class DualMilestoneEval(pl.Callback):
     """
     metrics_milestones: 지표 저장/평가만 수행할 에폭 집합
     plot_milestones   : 그림까지 남길 에폭 집합
@@ -117,7 +117,10 @@ class DualMilestoneEval(Callback):
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        device = pl_module.device
+        # 디바이스/출력 준비
+        device = pl_module.device if hasattr(pl_module, "device") else (
+            next(pl_module.parameters()).device if any(True for _ in pl_module.parameters()) else torch.device("cpu")
+        )
         outdir_split.mkdir(parents=True, exist_ok=True)
 
         total_values = 0
@@ -134,7 +137,8 @@ class DualMilestoneEval(Callback):
         # 디바이스에 맞춘 SoftDTW (CPU/GPU 안전)
         local_softdtw = SoftDTW(
             use_cuda=(device.type == "cuda"),
-            gamma=0.2, bandwidth=None, normalize=True
+            gamma=float(getattr(pl_module.cfg.train, "softdtw_gamma", 0.2)),
+            bandwidth=None, normalize=True
         )
 
         for batch in loader:
@@ -143,6 +147,7 @@ class DualMilestoneEval(Callback):
             cond = batch.y[:, spec_len:] if batch.y.size(1) > spec_len else None
             yh = pl_module.model(batch, cond)
 
+            # --- metrics 누적 ---
             diff = (yh - ys)
             sum_abs += torch.sum(torch.abs(diff)).item()
             sum_sq += torch.sum(diff * diff).item()
@@ -155,6 +160,7 @@ class DualMilestoneEval(Callback):
             sum_sdtw += float(sdtw_b.sum().item())
             total_samples += ys.size(0)
 
+            # --- 그림 저장 (꺼져 있으면 완전히 스킵) ---
             if not enable_plots or need <= 0:
                 continue
 
@@ -170,8 +176,7 @@ class DualMilestoneEval(Callback):
                 self._render_mol_ax(ax0, data_list[i])
                 ax1.plot(wl, ys[i].detach().cpu().numpy(), label="true")
                 ax1.plot(wl, yh[i].detach().cpu().numpy(), label="pred")
-                ax1.set_xlabel("wavelength")
-                ax1.set_ylabel("intensity")
+                ax1.set_xlabel("wavelength"); ax1.set_ylabel("intensity")
                 ax1.legend()
                 fig.tight_layout()
                 fig.savefig(outdir_split / f"sample_{saved:05d}.png", dpi=140)
@@ -184,14 +189,10 @@ class DualMilestoneEval(Callback):
         sid_v = sum_sid / max(1, total_samples)
         sdtw = sum_sdtw / max(1, total_samples)
 
-        import json
+        import json, pandas as pd
         metrics = {"mae": mae, "mse": mse, "rmse": rmse, "sid": sid_v, "softdtw": sdtw}
         (outdir_split / "metrics.json").write_text(json.dumps(metrics, indent=2))
-        try:
-            import pandas as pd
-            pd.DataFrame([metrics]).to_csv(outdir_split / "metrics.csv", index=False)
-        except Exception:
-            pass
+        pd.DataFrame([metrics]).to_csv(outdir_split / "metrics.csv", index=False)
         return metrics
 
     def on_train_epoch_end(self, trainer, pl_module):
@@ -200,15 +201,14 @@ class DualMilestoneEval(Callback):
         epoch = trainer.current_epoch + 1
         do_metrics = epoch in self.metrics_milestones
         do_plots   = self.global_enable_plots and (epoch in self.plot_milestones)
-
         if not (do_metrics or do_plots):
             return
 
         dm = trainer.datamodule
         wl = torch.arange(dm.spec_start, dm.spec_end + 1).cpu().numpy()
         base = Path(os.getcwd()) / self.outdir_name / f"epoch{epoch:03d}"
+        print(f"[Milestone] epoch {epoch} → metrics={do_metrics} plots={do_plots} @ {base}")
 
-        # 어떤 split을 평가할지
         if self.save_train:
             self._eval_split(pl_module, dm.train_dataloader(), wl, base / self.split_names[0],
                              enable_plots=do_plots, collect_limit=self.n_samples)
@@ -703,45 +703,6 @@ class EpochPrinter(Callback):
         total = torch.cuda.get_device_properties(cd).total_memory / 1e9 if cd >= 0 else 0
         free = torch.cuda.mem_get_info()[0] / 1e9 if cd >= 0 else 0
         print(f"[RANK{lr}] cuda_device={cd}  free={free:.2f}GB / total={total:.2f}GB")
-
-
-class ValPlotCallback(pl.callbacks.Callback):
-    def __init__(self, every_n_epochs: int = 1, n_samples: int = 8):
-        self.every = every_n_epochs
-        self.n_samples = n_samples
-
-    def on_validation_epoch_end(self, trainer, pl_module):
-        if not trainer.is_global_zero:  # ← 추가
-            return
-        epoch = trainer.current_epoch
-        if epoch % self.every != 0:
-            return
-        dm = trainer.datamodule
-        val_loader = dm.val_dataloader()
-        if val_loader is None:
-            return
-        batch = next(iter(val_loader)).to(pl_module.device)
-        spec_len = dm.spec_len
-        with torch.no_grad():
-            y_true = batch.y[:, :spec_len]
-            cond = batch.y[:, spec_len:] if dm.cond_dim > 0 else None
-            y_pred = pl_module.model(batch, cond=cond)
-        outdir = Path(PROJECT_ROOT) / "chains" / dm.cfg.general.name / f"epoch{epoch:02d}" / "chains"
-        outdir.mkdir(parents=True, exist_ok=True)
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        wl = torch.arange(dm.spec_start, dm.spec_end + 1).cpu().numpy()
-        k = min(self.n_samples, y_true.size(0))
-        for i in range(k):
-            fig = plt.figure(figsize=(6, 3))
-            plt.plot(wl, y_true[i].detach().cpu().numpy(), label="true")
-            plt.plot(wl, y_pred[i].detach().cpu().numpy(), label="pred")
-            plt.xlabel("wavelength"); plt.ylabel("intensity")
-            plt.legend(); plt.tight_layout()
-            fig.savefig(outdir / f"sample_{i}.png", dpi=140)
-            plt.close(fig)
-
 
 # ============================== Trainer ==============================
 def build_trainer(cfg, extra_callbacks: Optional[List[Callback]] = None, has_val: bool = True):

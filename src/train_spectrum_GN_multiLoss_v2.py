@@ -33,7 +33,12 @@ from rdkit.Chem import Draw
 from src.custom_loss.SID_loss import sid_loss
 from src.custom_loss.soft_dtw_cuda import SoftDTW
 from src.custom_loss.GradNorm import GradNorm
-
+#####
+from src.train_spectrum_GN_multiLoss import DualMilestoneEval
+try:
+    from tqdm import tqdm
+except Exception:
+    tqdm = None
 # ===================== OS / ENV =====================
 if platform.system() == "Windows":
     os.environ.setdefault("GLOO_DEVICE_TRANSPORT", "uv")
@@ -814,60 +819,94 @@ def build_trainer(cfg, *, extra_callbacks: Optional[List[pl.Callback]] = None, h
 # =====================================================================
 
 @torch.no_grad()
-def compute_metrics_on_loader(pl_module: SpectrumModule, loader, spec_len: int) -> Dict[str, float]:
-    """전체 loader에 대해 mae/mse/rmse/sid/softdtw 계산 (디바이스 안전)."""
+def compute_metrics_on_loader(
+    pl_module: SpectrumModule, loader, spec_len: int,
+    *, device_pref: str = "auto",               # "auto"|"cuda"|"cpu"
+    include_softdtw: bool = True,
+    max_batches: int | None = None,
+    show_progress: bool = True,
+) -> Dict[str, float]:
     if loader is None:
         return {}
 
-    # (A) 현재 모듈/배치가 놓일 디바이스 파악
+    # ---- 평가 디바이스 결정
+    if device_pref == "cuda" and torch.cuda.is_available():
+        device = torch.device(f"cuda:{torch.cuda.current_device()}")
+    elif device_pref == "cpu":
+        device = torch.device("cpu")
+    else:
+        device = pl_module.device if hasattr(pl_module, "device") else (
+            next(pl_module.parameters()).device if any(True for _ in pl_module.parameters()) else torch.device("cpu")
+        )
+
+    # ---- 모델을 평가 디바이스로 이동 + eval 모드
     try:
-        device = pl_module.device
-    except Exception:
-        device = next(pl_module.parameters()).device if any(True for _ in pl_module.parameters()) else torch.device("cpu")
+        orig_device = next(pl_module.parameters()).device
+    except StopIteration:
+        orig_device = torch.device("cpu")
+    was_training = pl_module.training
+    pl_module.to(device)
+    pl_module.eval()
 
-    # (B) SoftDTW를 '현재 디바이스'에 맞춰 새로 구성  ← 핵심!
-    local_softdtw = SoftDTW(
-        use_cuda=(device.type == "cuda"),
-        gamma=float(getattr(pl_module.cfg.train, "softdtw_gamma", 0.2)),
-        bandwidth=None,
-        normalize=True,
-    )
+    # ---- SoftDTW (디바이스 맞춰 생성)
+    local_softdtw = None
+    if include_softdtw:
+        local_softdtw = SoftDTW(
+            use_cuda=(device.type == "cuda"),
+            gamma=float(getattr(pl_module.cfg.train, "softdtw_gamma", 0.2)),
+            bandwidth=None, normalize=True
+        )
 
-    total_values = 0
-    total_samples = 0
-    sum_abs = 0.0
-    sum_sq = 0.0
-    sum_sid = 0.0
-    sum_sdtw = 0.0
+    try:
+        # ---- 누적 계산
+        total_values = total_samples = 0
+        sum_abs = sum_sq = sum_sid = sum_sdtw = 0.0
 
-    for batch in loader:
-        batch = batch.to(device)
-        ys = batch.y[:, :spec_len]
-        cond = batch.y[:, spec_len:] if batch.y.size(1) > spec_len else None
-        yh = pl_module.model(batch, cond)
+        it = loader
+        try:
+            from tqdm import tqdm
+            if show_progress:
+                it = tqdm(loader, total=len(loader), desc="[final-metrics]")
+        except Exception:
+            pass
 
-        diff = (yh - ys)
-        sum_abs += torch.sum(torch.abs(diff)).item()
-        sum_sq += torch.sum(diff * diff).item()
-        total_values += ys.numel()
+        for b_idx, batch in enumerate(it):
+            if max_batches is not None and b_idx >= max_batches:
+                break
+            batch = batch.to(device)
+            ys = batch.y[:, :spec_len]
+            cond = batch.y[:, spec_len:] if batch.y.size(1) > spec_len else None
+            yh = pl_module.model(batch, cond)
 
-        mask = torch.ones_like(ys, dtype=torch.bool)
-        sid_b = sid_loss(yh, ys, mask, eps=1e-6, reduction="mean_valid")
-        sum_sid += float(sid_b) * ys.size(0)
+            diff = (yh - ys)
+            sum_abs += torch.sum(torch.abs(diff)).item()
+            sum_sq += torch.sum(diff * diff).item()
+            total_values += ys.numel()
 
-        # (C) 여기서도 local_softdtw 사용
-        sdtw_b = local_softdtw(yh.unsqueeze(-1), ys.unsqueeze(-1))
-        sum_sdtw += float(sdtw_b.sum().item())
+            mask = torch.ones_like(ys, dtype=torch.bool)
+            sid_b = sid_loss(yh, ys, mask, eps=1e-6, reduction="mean_valid")
+            sum_sid += float(sid_b) * ys.size(0)
 
-        total_samples += ys.size(0)
+            if local_softdtw is not None:
+                sdtw_b = local_softdtw(yh.unsqueeze(-1), ys.unsqueeze(-1))
+                sum_sdtw += float(sdtw_b.sum().item())
 
-    mae = sum_abs / max(1, total_values)
-    mse = sum_sq / max(1, total_values)
-    rmse = float(max(mse, 0.0) ** 0.5)
-    sid_v = sum_sid / max(1, total_samples)
-    sdtw = sum_sdtw / max(1, total_samples)
-    return {"mae": mae, "mse": mse, "rmse": rmse, "sid": sid_v, "softdtw": sdtw}
+            total_samples += ys.size(0)
 
+        mae = sum_abs / max(1, total_values)
+        mse = sum_sq / max(1, total_values)
+        rmse = float(max(mse, 0.0) ** 0.5)
+        sid_v = sum_sid / max(1, total_samples)
+        sdtw = (sum_sdtw / max(1, total_samples)) if include_softdtw else float("nan")
+        return {"mae": mae, "mse": mse, "rmse": rmse, "sid": sid_v, "softdtw": sdtw}
+    finally:
+        # ---- 원상 복구
+        try:
+            pl_module.to(orig_device)
+            if was_training:
+                pl_module.train()
+        except Exception:
+            pass
 
 def merge_milestone_summaries(milestone_root: Path,
                               split_names: Tuple[str, str] = ("train", "val"),
@@ -940,6 +979,10 @@ def run_from_cfg(cfg: DictConfig,
         dm.override_splits(use_val=False, use_test=True)
         split_names = ("train", "test")
 
+    metrics_epochs = getattr(cfg.train, "milestones_metrics",
+                             getattr(cfg.train, "milestones", []))  # 없으면 기존 것을 metrics로
+    plot_epochs = getattr(cfg.train, "milestones_plots", [])  # 기본은 비어있음
+
     dm.setup()
     spec_len = dm.spec_len
 
@@ -952,16 +995,17 @@ def run_from_cfg(cfg: DictConfig,
         EpochPrinter(),
         GraphFilesCallback(),
         EpochCSVWriter(Path(os.getcwd()) / "metrics_epoch.csv"),
-        ValPlotCallback(every_n_epochs=1, n_samples=8),
-        MilestoneEvalAndFigure(
-            milestones=getattr(cfg.train, "milestones", [10, 50, 100]),
-            n_samples=getattr(cfg.train, "milestone_n_samples", 16),
-            plot_all=bool(getattr(cfg.train, "milestone_plot_all", False)),
+        DualMilestoneEval(
+            metrics_milestones=metrics_epochs,
+            plot_milestones=plot_epochs,
+            n_samples=(0 if is_cv else int(getattr(cfg.train, "milestone_n_samples", 16))),
+            plot_all=(False if is_cv else bool(getattr(cfg.train, "milestone_plot_all", False))),
             save_train=True,
-            save_val=is_cv,                 # CV: val 저장
-            save_test=(not is_cv),          # Final: test 저장
+            save_val=is_cv,  # CV: val 저장
+            save_test=(not is_cv),  # Final: test 저장
             outdir_name="milestones",
             split_names=split_names,
+            global_enable_plots=(not is_cv),  # CV 전체에서 그림 off
         ),
     ]
     if getattr(cfg.general, "gpu_monitor", False):
@@ -989,9 +1033,30 @@ def run_from_cfg(cfg: DictConfig,
     milestones_summary_csv = merge_milestone_summaries(milestones_root, split_names=split_names)
 
     # ---- 최종 지표 계산 (Train + Val|Test)
-    train_metrics = compute_metrics_on_loader(model, dm.train_dataloader(), spec_len)
-    second_loader = dm.val_dataloader() if is_cv else dm.test_dataloader()
-    second_metrics = compute_metrics_on_loader(model, second_loader, spec_len)
+    print("[FINAL] computing metrics on train/val ...")
+    t0 = time.perf_counter()
+
+    # CV 모드라면 train/val, Final 모드라면 train/test
+    train_metrics = compute_metrics_on_loader(
+        model, dm.train_dataloader(), dm.spec_len,
+        device_pref="cuda",  # 가능하면 GPU로
+        include_softdtw=True,  # 느리면 False로 끄기
+        max_batches=None,  # 느리면 20 같은 상한
+        show_progress=True,
+    )
+
+    if is_cv:
+        second_loader = dm.val_dataloader()
+    else:
+        second_loader = dm.test_dataloader()
+
+    second_metrics = compute_metrics_on_loader(
+        model, second_loader, dm.spec_len,
+        device_pref="cuda",
+        include_softdtw=True,
+        max_batches=None,
+        show_progress=True,
+    )
 
     mode_label = "CV" if is_cv else "Final"
     second_tag = "val" if is_cv else "test"
