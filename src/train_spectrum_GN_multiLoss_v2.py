@@ -1,24 +1,31 @@
 # -*- coding: utf-8 -*-
-# X,E,y→X′,E′,y′를 갱신하는 백본(GNN/DiGress)을 선택해 그래프 수준 y를 얻고,
-# 이를 MLP로 스펙트럼(연속 nm 그리드)으로 회귀. 멀티로스 + GradNorm + 로깅/그림 저장.
+# train_spectrum_pl_reworked.py
+# - GNN/DiGress 백본으로 연속 nm 그리드 스펙트럼 회귀
+# - 멀티로스 + GradNorm + 마일스톤 그림/지표 저장
+# - is_cv 플래그 지원 (train/val vs train/test)
+# - import 가능한 API(run_from_cfg) + 스크립트 직접 실행( hydra.main )
 
+import os
+import csv
+import json
 import time
+import math
+import platform
 import warnings
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback, ModelCheckpoint, LearningRateMonitor
-from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
+from pytorch_lightning.strategies import DDPStrategy
 from torch_geometric.nn import GINEConv, global_mean_pool, BatchNorm
 from torch_geometric.loader import DataLoader
-import csv
-from pytorch_lightning.strategies import DDPStrategy
+
 from rdkit import Chem
 from rdkit.Chem import Draw
 
@@ -27,9 +34,7 @@ from src.custom_loss.SID_loss import sid_loss
 from src.custom_loss.soft_dtw_cuda import SoftDTW
 from src.custom_loss.GradNorm import GradNorm
 
-import platform
-import os
-
+# ===================== OS / ENV =====================
 if platform.system() == "Windows":
     os.environ.setdefault("GLOO_DEVICE_TRANSPORT", "uv")
     os.environ.setdefault(
@@ -37,7 +42,7 @@ if platform.system() == "Windows":
         os.environ.get("GLOO_SOCKET_IFNAME", "Loopback Pseudo-Interface 1"),
     )
 else:
-    # 리눅스: 윈도우용 gloo 설정 제거 + NCCL 변수 제거(이 스크립트는 gloo만 사용)
+    # 리눅스: 깨끗이
     os.environ.pop("GLOO_DEVICE_TRANSPORT", None)
     os.environ.pop("GLOO_SOCKET_IFNAME", None)
     for k in (
@@ -47,48 +52,57 @@ else:
         os.environ.pop(k, None)
 
 torch.set_float32_matmul_precision("high")
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-os.environ.setdefault("DIGRESS_ROOT", str(PROJECT_ROOT))
 warnings.filterwarnings("ignore", category=pl.utilities.warnings.PossibleUserWarning)
-RUN_DIR = Path(os.getcwd())
 
-# ======================== Milestone 평가 + 그림 저장 =========================
-# === 교체/추가 ===
-class DualMilestoneEval(Callback):
-    """
-    metrics_milestones: 지표 저장/평가만 수행할 에폭 집합
-    plot_milestones   : 그림까지 남길 에폭 집합
-      - 두 집합은 겹쳐도 되고, 비어도 됨.
-      - 해당 에폭에서 그림을 남길지 여부는 (epoch in plot_milestones)로 결정.
-    """
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# =====================================================================
+#                           유틸 / 공통
+# =====================================================================
+
+def _to_numpy(x: torch.Tensor):
+    return x.detach().cpu().numpy()
+
+def _ensure_dir(p: Path):
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def _rmse_from_mse(mse: float) -> float:
+    return float(math.sqrt(max(0.0, mse)))
+
+def _device_of(pl_module: "SpectrumModule"):
+    if hasattr(pl_module, "device"):
+        return pl_module.device
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# =====================================================================
+#                         마일스톤 평가+그림 저장
+# =====================================================================
+
+class MilestoneEvalAndFigure(Callback):
     def __init__(
         self,
-        metrics_milestones: List[int],
-        plot_milestones: Optional[List[int]] = None,
+        milestones: List[int],
         n_samples: int = 8,
         plot_all: bool = False,
         save_train: bool = True,
         save_val: bool = True,
         save_test: bool = False,
         outdir_name: str = "milestones",
-        split_names: Tuple[str, str] = ("train", "val"),
-        global_enable_plots: bool = True,   # CV 등에서 전역 차단용
+        split_names: Tuple[str, str] = ("train", "val"),  # ("train","test")로도 사용
+        enable_plots: bool = True
     ):
-        self.metrics_milestones = set(int(m) for m in metrics_milestones)
-        self.plot_milestones = set(int(m) for m in (plot_milestones or []))
+        self.milestones = set(int(m) for m in milestones)
         self.n_samples = int(n_samples)
         self.plot_all = bool(plot_all)
         self.save_train, self.save_val, self.save_test = save_train, save_val, save_test
         self.outdir_name = outdir_name
-        self.split_names = split_names
-        self.global_enable_plots = bool(global_enable_plots)
+        self.split_names = split_names  # ("train","val") or ("train","test")
 
     @staticmethod
     def _render_mol_ax(ax, data):
         ax.axis("off")
         try:
-            from rdkit import Chem
-            from rdkit.Chem import Draw
             mol = None
             if hasattr(data, "smiles") and data.smiles:
                 mol = Chem.MolFromSmiles(data.smiles)
@@ -100,6 +114,7 @@ class DualMilestoneEval(Callback):
                 return
         except Exception:
             pass
+        # fallback: 간단 그래프
         try:
             import networkx as nx
             G = nx.Graph()
@@ -112,12 +127,12 @@ class DualMilestoneEval(Callback):
             ax.text(0.5, 0.5, "Mol unavailable", ha="center", va="center")
 
     @torch.no_grad()
-    def _eval_split(self, pl_module, loader, wl, outdir_split, *, enable_plots: bool, collect_limit=None):
+    def _eval_split(self, pl_module, loader, wl, outdir_split, collect_limit=None):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        device = pl_module.device
+        device = _device_of(pl_module)
         outdir_split.mkdir(parents=True, exist_ok=True)
 
         total_values = 0
@@ -129,14 +144,8 @@ class DualMilestoneEval(Callback):
 
         saved = 0
         need = 10**12 if (self.plot_all or collect_limit is None) else int(collect_limit)
+
         spec_len = wl.shape[0]
-
-        # 디바이스에 맞춘 SoftDTW (CPU/GPU 안전)
-        local_softdtw = SoftDTW(
-            use_cuda=(device.type == "cuda"),
-            gamma=0.2, bandwidth=None, normalize=True
-        )
-
         for batch in loader:
             batch = batch.to(device)
             ys = batch.y[:, :spec_len]
@@ -151,13 +160,11 @@ class DualMilestoneEval(Callback):
             mask = torch.ones_like(ys, dtype=torch.bool)
             sid_b = sid_loss(yh, ys, mask, eps=1e-6, reduction="mean_valid")
             sum_sid += float(sid_b) * ys.size(0)
-            sdtw_b = local_softdtw(yh.unsqueeze(-1), ys.unsqueeze(-1))
+            sdtw_b = pl_module.softdtw(yh.unsqueeze(-1), ys.unsqueeze(-1))
             sum_sdtw += float(sdtw_b.sum().item())
             total_samples += ys.size(0)
 
-            if not enable_plots or need <= 0:
-                continue
-
+            # figures
             data_list = batch.to_data_list()
             b = ys.size(0)
             for i in range(b):
@@ -168,8 +175,8 @@ class DualMilestoneEval(Callback):
                 ax0 = fig.add_subplot(gs[0, 0])
                 ax1 = fig.add_subplot(gs[0, 1])
                 self._render_mol_ax(ax0, data_list[i])
-                ax1.plot(wl, ys[i].detach().cpu().numpy(), label="true")
-                ax1.plot(wl, yh[i].detach().cpu().numpy(), label="pred")
+                ax1.plot(wl, _to_numpy(ys[i]), label="true")
+                ax1.plot(wl, _to_numpy(yh[i]), label="pred")
                 ax1.set_xlabel("wavelength")
                 ax1.set_ylabel("intensity")
                 ax1.legend()
@@ -180,11 +187,10 @@ class DualMilestoneEval(Callback):
 
         mae = sum_abs / max(1, total_values)
         mse = sum_sq / max(1, total_values)
-        rmse = float(max(mse, 0.0) ** 0.5)
+        rmse = _rmse_from_mse(mse)
         sid_v = sum_sid / max(1, total_samples)
         sdtw = sum_sdtw / max(1, total_samples)
 
-        import json
         metrics = {"mae": mae, "mse": mse, "rmse": rmse, "sid": sid_v, "softdtw": sdtw}
         (outdir_split / "metrics.json").write_text(json.dumps(metrics, indent=2))
         try:
@@ -198,26 +204,29 @@ class DualMilestoneEval(Callback):
         if not trainer.is_global_zero:
             return
         epoch = trainer.current_epoch + 1
-        do_metrics = epoch in self.metrics_milestones
-        do_plots   = self.global_enable_plots and (epoch in self.plot_milestones)
-
-        if not (do_metrics or do_plots):
+        if epoch not in self.milestones:
             return
 
         dm = trainer.datamodule
         wl = torch.arange(dm.spec_start, dm.spec_end + 1).cpu().numpy()
         base = Path(os.getcwd()) / self.outdir_name / f"epoch{epoch:03d}"
+        print(f"[Milestone] evaluating at epoch {epoch} → {base}")
 
-        # 어떤 split을 평가할지
+        # split 이름은 ("train","val") 또는 ("train","test")
+        train_name, second_name = self.split_names
+
         if self.save_train:
-            self._eval_split(pl_module, dm.train_dataloader(), wl, base / self.split_names[0],
-                             enable_plots=do_plots, collect_limit=self.n_samples)
+            self._eval_split(pl_module, dm.train_dataloader(), wl, base / train_name, collect_limit=self.n_samples)
+
         if self.save_val and dm.val_dataloader() is not None:
-            self._eval_split(pl_module, dm.val_dataloader(), wl, base / "val",
-                             enable_plots=do_plots, collect_limit=self.n_samples)
+            self._eval_split(pl_module, dm.val_dataloader(), wl, base / "val", collect_limit=self.n_samples)
+
         if self.save_test and dm.test_dataloader() is not None:
-            self._eval_split(pl_module, dm.test_dataloader(), wl, base / "test",
-                             enable_plots=do_plots, collect_limit=self.n_samples)
+            self._eval_split(pl_module, dm.test_dataloader(), wl, base / "test", collect_limit=self.n_samples)
+
+# =====================================================================
+#                         에폭별 CSV 라이터
+# =====================================================================
 
 class EpochCSVWriter(Callback):
     def __init__(self, out_path: Path):
@@ -245,8 +254,10 @@ class EpochCSVWriter(Callback):
             for r in self.rows:
                 w.writerow(r)
 
+# =====================================================================
+#                              GPU 모니터
+# =====================================================================
 
-# ============================== GPU 모니터 ==============================
 class GpuUsageMonitor(Callback):
     def __init__(self, interval=50):
         self.interval = interval
@@ -287,8 +298,10 @@ class GpuUsageMonitor(Callback):
             msg += f" util={util.gpu}% nvml_mem={meminfo.used/1e9:.2f}/{meminfo.total/1e9:.2f}GB"
         print(msg)
 
+# =====================================================================
+#                           보조 로그 콜백
+# =====================================================================
 
-# ============================== 그래프 로그 파일 ==============================
 class GraphFilesCallback(pl.callbacks.Callback):
     def __init__(self):
         self.fp = None
@@ -300,11 +313,8 @@ class GraphFilesCallback(pl.callbacks.Callback):
         self.fp = open(gdir / "generated_samples1.txt", "a", encoding="utf-8")
 
     def on_train_epoch_end(self, trainer, pl_module):
-        # DDP 중복 방지
         if not trainer.is_global_zero or not self.fp:
             return
-
-        # val_dataloader가 없으면(=검증 안 돌면) train_total을 대신 기록
         has_val = getattr(trainer.datamodule, "val_dataloader", None)
         if has_val is None or trainer.datamodule.val_dataloader() is None:
             tm = trainer.callback_metrics.get("train_total")
@@ -318,8 +328,10 @@ class GraphFilesCallback(pl.callbacks.Callback):
             self.fp.close()
             self.fp = None
 
+# =====================================================================
+#                             데이터 모듈
+# =====================================================================
 
-# ============================== 데이터 모듈 ==============================
 from src.datasets.csv_spectrum_dataset import CSVSpecDataset
 
 class CSVSpecDataModule(pl.LightningDataModule):
@@ -338,6 +350,20 @@ class CSVSpecDataModule(pl.LightningDataModule):
         self.inchi_col = getattr(cfg.dataset, "inchi_col", "InChI")
         self.add_h = bool(getattr(cfg.dataset, "add_h", False))
 
+    def override_splits(self, *, use_val: bool, use_test: bool, val_from_test: bool = False):
+        """
+        - use_val=True, val_from_test=True  → test_csv를 검증셋으로 사용, test는 비활성화.
+        - use_test=True                     → test_csv 사용(검증은 비활성화).
+        """
+        if use_val and val_from_test:
+            self.val_csv = self.test_csv
+            self.test_csv = None
+        elif use_test:
+            self.val_csv = None
+        else:
+            self.val_csv = None
+            self.test_csv = None
+
     def setup(self, stage: Optional[str] = None):
         s, e = self.spec_start, self.spec_end
         self.ds_train = CSVSpecDataset(
@@ -350,8 +376,7 @@ class CSVSpecDataModule(pl.LightningDataModule):
             add_h=self.add_h
         )
 
-        self.ds_val = None  # 기본값: 없음
-        # --- case A: val CSV가 명시되어 있으면 그것만 사용
+        self.ds_val = None
         if self.val_csv:
             self.ds_val = CSVSpecDataset(
                 self.val_csv, "val",
@@ -362,20 +387,7 @@ class CSVSpecDataModule(pl.LightningDataModule):
                 fixed_vocabs=self.fixed_vocabs, boolean_cols=self.boolean_cols,
                 add_h=self.add_h
             )
-        else:
-            # --- case B: val CSV가 없고 test CSV가 있을 때 → 검증 없이 전체 학습
-            if not self.val_csv and self.test_csv:
-                self.ds_val = None
-            # --- case C: val/test 둘 다 없으면 10% 랜덤 스플릿(이전 동작 유지)
-            elif not self.val_csv and not self.test_csv:
-                n_total = len(self.ds_train)
-                n_val = max(1, int(0.1 * n_total))
-                self.ds_train, self.ds_val = torch.utils.data.random_split(
-                    self.ds_train, [n_total - n_val, n_val],
-                    generator=torch.Generator().manual_seed(42)
-                )
 
-        # test는 만들어 두되, 메인에서 평가 호출을 조절(기본은 호출 안 함)
         self.ds_test = None
         if self.test_csv:
             self.ds_test = CSVSpecDataset(
@@ -418,9 +430,10 @@ class CSVSpecDataModule(pl.LightningDataModule):
             persistent_workers=self.num_workers > 0,
         )
 
+# =====================================================================
+#                             모델 백본들
+# =====================================================================
 
-# ============================== 두 개의 백본 ==============================
-# ---- (A) GNN 백본 (기존) ----
 class GraphSpectrumNet(nn.Module):
     def __init__(self, node_in=10, edge_in=6, hidden=256, layers=4, cond_dim=0, out_dim=601, dropout=0.1):
         super().__init__()
@@ -452,7 +465,7 @@ class GraphSpectrumNet(nn.Module):
             g = torch.cat([g, cond], dim=-1)
         return self.readout(g)
 
-# ---- (B) DiGress 백본 ----
+# ---- DiGress 백본 ----
 from src.models.transformer_model import GraphTransformer
 
 def pyg_batch_to_dense(batch, y_in, edge_in_dim):
@@ -481,9 +494,6 @@ def pyg_batch_to_dense(batch, y_in, edge_in_dim):
         y_in = torch.zeros(bs, 0, device=device)
     return X, E, y_in, node_mask
 
-# ---- DiGress 백본 (입력 임베딩 포함) ----
-from src.models.transformer_model import GraphTransformer
-
 class DiGressSpectrumModel(nn.Module):
     def __init__(self, node_in, edge_in, cond_dim, spec_len,
                  hidden=256, n_layers=6, n_head=8, dropout=0.1):
@@ -492,12 +502,10 @@ class DiGressSpectrumModel(nn.Module):
         self.edge_in = edge_in
         self.cond_dim = cond_dim
 
-        # 1) 입력을 모두 hidden 차원으로 투영
         self.emb_X = nn.Linear(node_in, hidden)
-        self.emb_E = nn.Linear(max(1, edge_in), hidden)               # edge_attr가 없으면 1로 대체
+        self.emb_E = nn.Linear(max(1, edge_in), hidden)
         self.emb_y = nn.Linear(max(1, cond_dim), hidden) if cond_dim > 0 else None
 
-        # 2) GraphTransformer는 모두 hidden 차원으로 받도록 설정
         self.gt = GraphTransformer(
             n_layers=n_layers,
             input_dims={'X': hidden, 'E': hidden, 'y': hidden},
@@ -515,29 +523,22 @@ class DiGressSpectrumModel(nn.Module):
         )
 
     def forward(self, batch, cond):
-        # cond → hidden (없으면 hidden차원 제로-벡터)
         if cond is not None and cond.numel() > 0:
-            y_in = cond if self.emb_y is None else self.emb_y(cond)  # [B, hidden]
+            y_in = cond if self.emb_y is None else self.emb_y(cond)
         else:
             y_in = torch.zeros(batch.num_graphs, self.hidden, device=batch.x.device)
 
-        # Dense로 변환 (y_in은 이미 [B, hidden])
-        X, E, y_in, node_mask = pyg_batch_to_dense(batch, y_in, self.edge_in)  # X:[B,N,dx], E:[B,N,N,de]
-
-        # edge_attr가 완전히 없을 때 de=0인 텐서가 올 수 있으니 1로 보정
+        X, E, y_in, node_mask = pyg_batch_to_dense(batch, y_in, self.edge_in)
         if E.size(-1) == 0:
             E = E.new_zeros(E.shape[:-1] + (1,))
 
-        # 입력 임베딩: 마지막 차원에 선형 적용
-        X = self.emb_X(X)      # [B, N, hidden]
-        E = self.emb_E(E)      # [B, N, N, hidden]
-        # y_in은 이미 [B, hidden]
+        X = self.emb_X(X)
+        E = self.emb_E(E)
 
         out = self.gt(X, E, y_in, node_mask)  # out.y: [B, hidden]
         return self.readout(out.y)
 
-
-# ============================== 백본 선택 팩토리 ==============================
+# 백본 선택
 def build_backbone(cfg: DictConfig, dm: CSVSpecDataModule, cond_dim: int, spec_len: int) -> nn.Module:
     backend = str(getattr(cfg.model, "backend", "gnn")).lower()
     if backend == "digress":
@@ -555,8 +556,10 @@ def build_backbone(cfg: DictConfig, dm: CSVSpecDataModule, cond_dim: int, spec_l
     else:
         raise ValueError(f"Unknown model.backend={backend} (use 'gnn' or 'digress')")
 
+# =====================================================================
+#                         Lightning 모듈
+# =====================================================================
 
-# ============================== Lightning 모듈 ==============================
 class SpectrumModule(pl.LightningModule):
     """
     cfg.train.losses: ["SID","MAE"] 등
@@ -606,9 +609,6 @@ class SpectrumModule(pl.LightningModule):
             elif name == "SID":
                 out[name] = sid_loss(y_pred, y_true, mask, eps=1e-6, reduction="mean_valid")
             elif name == "SOFTDTW":
-                if self.softdtw is None:
-                    # 현재 텐서가 놓인 장치에 맞춰 최초 1회만 생성 (rank별 올바른 GPU에 생성됨)
-                    self.softdtw = SoftDTW(use_cuda=y_pred.is_cuda, **self._softdtw_kwargs)
                 out[name] = self.softdtw(y_pred.unsqueeze(-1), y_true.unsqueeze(-1)).mean()
             else:
                 raise ValueError(f"Unknown loss: {name}")
@@ -676,9 +676,7 @@ class SpectrumModule(pl.LightningModule):
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=1e-4)
 
-
-# ============================== 에폭 프린터 & 밸리데이션 플로터 ==============================
-class EpochPrinter(Callback):
+class EpochPrinter(pl.Callback):
     def __init__(self):
         self._t0 = None
 
@@ -696,22 +694,26 @@ class EpochPrinter(Callback):
                 trainer.logger.log_metrics({"epoch_time_sec": elapsed}, step=trainer.current_epoch)
             except Exception:
                 pass
+
     def on_fit_start(self, trainer, pl_module):
-        import os, torch
         lr = int(os.environ.get("LOCAL_RANK", -1))
-        cd = torch.cuda.current_device() if torch.cuda.is_available() else -1
-        total = torch.cuda.get_device_properties(cd).total_memory / 1e9 if cd >= 0 else 0
-        free = torch.cuda.mem_get_info()[0] / 1e9 if cd >= 0 else 0
-        print(f"[RANK{lr}] cuda_device={cd}  free={free:.2f}GB / total={total:.2f}GB")
+        if torch.cuda.is_available():
+            cd = torch.cuda.current_device()
+            total = torch.cuda.get_device_properties(cd).total_memory / 1e9
+            free = torch.cuda.mem_get_info()[0] / 1e9
+            print(f"[RANK{lr}] cuda_device={cd}  free={free:.2f}GB / total={total:.2f}GB")
+        else:
+            print(f"[RANK{lr}] CPU mode")
 
 
-class ValPlotCallback(pl.callbacks.Callback):
+class ValPlotCallback(pl.Callback):
+    """검증 배치 일부를 플롯. (is_cv=False이면 val_loader가 없으니 자연히 skip)"""
     def __init__(self, every_n_epochs: int = 1, n_samples: int = 8):
         self.every = every_n_epochs
         self.n_samples = n_samples
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        if not trainer.is_global_zero:  # ← 추가
+        if not trainer.is_global_zero:
             return
         epoch = trainer.current_epoch
         if epoch % self.every != 0:
@@ -726,7 +728,7 @@ class ValPlotCallback(pl.callbacks.Callback):
             y_true = batch.y[:, :spec_len]
             cond = batch.y[:, spec_len:] if dm.cond_dim > 0 else None
             y_pred = pl_module.model(batch, cond=cond)
-        outdir = Path(PROJECT_ROOT) / "chains" / dm.cfg.general.name / f"epoch{epoch:02d}" / "chains"
+        outdir = Path(os.getcwd()) / "chains" / dm.cfg.general.name / f"epoch{epoch:02d}" / "chains"
         outdir.mkdir(parents=True, exist_ok=True)
         import matplotlib
         matplotlib.use("Agg")
@@ -743,12 +745,14 @@ class ValPlotCallback(pl.callbacks.Callback):
             plt.close(fig)
 
 
-# ============================== Trainer ==============================
-def build_trainer(cfg, extra_callbacks: Optional[List[Callback]] = None, has_val: bool = True):
+# =====================================================================
+#                              Trainer
+# =====================================================================
+
+def build_trainer(cfg, *, extra_callbacks: Optional[List[pl.Callback]] = None, has_val: bool = True):
     job_name = cfg.general.name
-    ckpt_dir = Path(PROJECT_ROOT) / "checkpoints" / job_name
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    epochs = int(getattr(cfg.train, "n_epochs", 200))
+    ckpt_dir = _ensure_dir(Path(PROJECT_ROOT) / "checkpoints" / job_name)
+    precision = getattr(cfg.trainer, "precision", getattr(cfg.train, "precision", 32))
 
     monitor_key = "val_total" if has_val else "train_total"
     checkpoint_best = ModelCheckpoint(dirpath=str(ckpt_dir), filename="best",
@@ -760,24 +764,16 @@ def build_trainer(cfg, extra_callbacks: Optional[List[Callback]] = None, has_val
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
 
-    import platform
-    is_windows = platform.system() == "Windows"
-
-    # YAML → Trainer 전달값 해석
-    accel = getattr(cfg.train, "accelerator", "gpu")
-    yaml_dev = getattr(cfg.train, "devices", 1)  # 2 또는 [0,1]
+    is_windows = (platform.system() == "Windows")
+    accel = getattr(cfg.train, "accelerator", "gpu" if torch.cuda.is_available() else "cpu")
+    yaml_devices = getattr(cfg.train, "devices", 1)
+    devices = 1 if is_windows else yaml_devices
     num_nodes = int(getattr(cfg.train, "num_nodes", 1))
-    precision = getattr(cfg.trainer, "precision", getattr(cfg.train, "precision", 32))
     strategy_cfg = str(getattr(cfg.train, "strategy", "auto"))
 
-    # ▶ 요구사항: Windows는 항상 1GPU, Linux는 YAML 그대로
-    devices = 1 if is_windows else yaml_dev
-
-    # ▶ OS별 DDP 백엔드 선택
-    from pytorch_lightning.strategies import DDPStrategy
     if devices != 1 and strategy_cfg in ("ddp", "ddp_find_unused_false"):
         strategy = DDPStrategy(
-            process_group_backend="gloo", # backend,
+            process_group_backend="gloo",
             find_unused_parameters=False,
             gradient_as_bucket_view=True,
             static_graph=True,
@@ -790,67 +786,192 @@ def build_trainer(cfg, extra_callbacks: Optional[List[Callback]] = None, has_val
     print(f"[DIST] system={'Windows' if is_windows else 'Linux'} "
           f"→ backend={getattr(strategy, 'process_group_backend', strategy)} devices={devices}")
 
-    trainer = pl.Trainer(
+    # ➜ 여기 추가: has_val=False일 때 검증 루프 완전 비활성화
+    trainer_kwargs = dict(
         max_epochs=int(getattr(cfg.train, "n_epochs", 200)),
         accelerator=accel,
         devices=devices,
         num_nodes=num_nodes,
-        strategy=strategy,  # ★ 반드시 전달
+        strategy=strategy,
         precision=precision,
-        #logger=loggers,
         callbacks=callbacks,
         enable_progress_bar=True,
         default_root_dir=str(PROJECT_ROOT),
     )
+    if not has_val:
+        trainer_kwargs.update(
+            num_sanity_val_steps=0,  # sanity check에서 val loop 건너뛰기
+            limit_val_batches=0,     # 에폭 중 val loop 자체 비활성화
+        )
+
+    trainer = pl.Trainer(**trainer_kwargs)
     return trainer
 
-# ============================== Hydra 엔트리 ==============================
-@hydra.main(version_base="1.3", config_path="../configs", config_name="config_spectrum")
-def main(cfg: DictConfig):
+
+
+# =====================================================================
+#                         평가 유틸리티 함수
+# =====================================================================
+
+@torch.no_grad()
+def compute_metrics_on_loader(pl_module: SpectrumModule, loader, spec_len: int) -> Dict[str, float]:
+    """전체 loader에 대해 mae/mse/rmse/sid/softdtw 계산 (디바이스 안전)."""
+    if loader is None:
+        return {}
+
+    # (A) 현재 모듈/배치가 놓일 디바이스 파악
+    try:
+        device = pl_module.device
+    except Exception:
+        device = next(pl_module.parameters()).device if any(True for _ in pl_module.parameters()) else torch.device("cpu")
+
+    # (B) SoftDTW를 '현재 디바이스'에 맞춰 새로 구성  ← 핵심!
+    local_softdtw = SoftDTW(
+        use_cuda=(device.type == "cuda"),
+        gamma=float(getattr(pl_module.cfg.train, "softdtw_gamma", 0.2)),
+        bandwidth=None,
+        normalize=True,
+    )
+
+    total_values = 0
+    total_samples = 0
+    sum_abs = 0.0
+    sum_sq = 0.0
+    sum_sid = 0.0
+    sum_sdtw = 0.0
+
+    for batch in loader:
+        batch = batch.to(device)
+        ys = batch.y[:, :spec_len]
+        cond = batch.y[:, spec_len:] if batch.y.size(1) > spec_len else None
+        yh = pl_module.model(batch, cond)
+
+        diff = (yh - ys)
+        sum_abs += torch.sum(torch.abs(diff)).item()
+        sum_sq += torch.sum(diff * diff).item()
+        total_values += ys.numel()
+
+        mask = torch.ones_like(ys, dtype=torch.bool)
+        sid_b = sid_loss(yh, ys, mask, eps=1e-6, reduction="mean_valid")
+        sum_sid += float(sid_b) * ys.size(0)
+
+        # (C) 여기서도 local_softdtw 사용
+        sdtw_b = local_softdtw(yh.unsqueeze(-1), ys.unsqueeze(-1))
+        sum_sdtw += float(sdtw_b.sum().item())
+
+        total_samples += ys.size(0)
+
+    mae = sum_abs / max(1, total_values)
+    mse = sum_sq / max(1, total_values)
+    rmse = float(max(mse, 0.0) ** 0.5)
+    sid_v = sum_sid / max(1, total_samples)
+    sdtw = sum_sdtw / max(1, total_samples)
+    return {"mae": mae, "mse": mse, "rmse": rmse, "sid": sid_v, "softdtw": sdtw}
+
+
+def merge_milestone_summaries(milestone_root: Path,
+                              split_names: Tuple[str, str] = ("train", "val"),
+                              save_path: Optional[Path] = None) -> Optional[Path]:
     """
-    설정 예:
-      model:
-        backend: gnn        # gnn | digress
-        hidden: 256
-        layers: 6
-        n_head: 8
-        dropout: 0.1
+    milestones/epochXXX/{train|val|test}/metrics.csv 파일들을 스캔해 하나로 합친다.
+    컬럼: epoch, split, mae, mse, rmse, sid, softdtw
     """
-    RUN_DIR = Path(os.getcwd())
-    callbacks = [
+    if not milestone_root.exists():
+        return None
+    rows = []
+    import re
+    import pandas as pd
+
+    for p in sorted(milestone_root.glob("epoch*")):
+        m = re.search(r"epoch(\d+)", p.name)
+        if not m:
+            continue
+        ep = int(m.group(1))
+        for sp in ("train", split_names[1]):  # train + (val|test)
+            csv_path = p / sp / "metrics.csv"
+            if csv_path.exists():
+                try:
+                    df = pd.read_csv(csv_path)
+                    if not df.empty:
+                        rec = df.iloc[0].to_dict()
+                        rec.update({"epoch": ep, "split": sp})
+                        rows.append(rec)
+                except Exception:
+                    pass
+
+    if not rows:
+        return None
+
+    df_all = pd.DataFrame(rows).sort_values(["epoch", "split"])
+    if save_path is None:
+        save_path = milestone_root / "milestones_summary.csv"
+    _ensure_dir(save_path.parent)
+    df_all.to_csv(save_path, index=False)
+    return save_path
+
+
+# =====================================================================
+#                         실행 엔진 (API + main)
+# =====================================================================
+
+def run_from_cfg(cfg: DictConfig,
+                 *,
+                 is_cv: Optional[bool] = None,
+                 fold_tag: Optional[str] = None,
+                 final_csv_name: Optional[str] = None) -> Dict[str, str]:
+    """
+    외부(CV 코드)에서 import하여 호출 가능한 실행 함수.
+    - is_cv=True  → (train, val) 모드. test_csv를 검증으로 사용.
+    - is_cv=False → (train, test) 모드. test_csv를 테스트로 사용.
+    반환: {"final_metrics_csv": ..., "milestones_summary_csv": ..., "ckpt_dir": ...}
+    """
+    # ---- is_cv 해석
+    if is_cv is None:
+        is_cv = bool(getattr(cfg.general, "is_cv", False))
+
+    # ---- DataModule 구성(+ 분할 오버라이드)
+    dm = CSVSpecDataModule(cfg)
+    if is_cv:
+        # test_csv → val 로 사용, test 비활성화
+        dm.override_splits(use_val=True, use_test=False, val_from_test=True)
+        split_names = ("train", "val")
+    else:
+        # test_csv를 테스트로, val 비활성화
+        dm.override_splits(use_val=False, use_test=True)
+        split_names = ("train", "test")
+
+    dm.setup()
+    spec_len = dm.spec_len
+
+    # ---- 백본
+    backbone = build_backbone(cfg, dm, cond_dim=dm.cond_dim, spec_len=spec_len)
+    model = SpectrumModule(cfg, spec_len=spec_len, cond_dim=dm.cond_dim, backbone=backbone)
+
+    # ---- 콜백들
+    callbacks: List[pl.Callback] = [
         EpochPrinter(),
-        ValPlotCallback(every_n_epochs=1, n_samples=8),
         GraphFilesCallback(),
-        EpochCSVWriter(RUN_DIR / "metrics_epoch.csv"),
+        EpochCSVWriter(Path(os.getcwd()) / "metrics_epoch.csv"),
+        ValPlotCallback(every_n_epochs=1, n_samples=8),
         MilestoneEvalAndFigure(
             milestones=getattr(cfg.train, "milestones", [10, 50, 100]),
             n_samples=getattr(cfg.train, "milestone_n_samples", 16),
             plot_all=bool(getattr(cfg.train, "milestone_plot_all", False)),
-            save_train=True, save_val=True,
-            save_test=bool(getattr(cfg.train, "milestone_eval_test", False)),
+            save_train=True,
+            save_val=is_cv,                 # CV: val 저장
+            save_test=(not is_cv),          # Final: test 저장
             outdir_name="milestones",
+            split_names=split_names,
         ),
     ]
-
-    dm = CSVSpecDataModule(cfg); dm.setup()
     if getattr(cfg.general, "gpu_monitor", False):
         callbacks.append(GpuUsageMonitor(interval=getattr(cfg.general, "gpu_monitor_interval", 50)))
 
-    # 백본 선택/생성
-    backbone = build_backbone(cfg, dm, cond_dim=dm.cond_dim, spec_len=dm.spec_len)
+    # ---- Trainer
+    trainer = build_trainer(cfg, extra_callbacks=callbacks, has_val=is_cv)
+
+    # ---- 학습
     print(f"[MODEL] backend={getattr(cfg.model,'backend','gnn')}  -> {type(backbone).__name__}")
-
-    # (디버그) 문자열 확인 — processed 캐시 갱신 필요 시 force_reprocess로 재생성하세요
-    try:
-        batch = next(iter(dm.train_dataloader()))
-        d0 = batch.to_data_list()[0]
-        print("smiles:", getattr(d0, "smiles", None))
-        print("inchi :", getattr(d0, "inchi", None))
-    except Exception:
-        pass
-
-    trainer = build_trainer(cfg, extra_callbacks=callbacks)
-    model = SpectrumModule(cfg, spec_len=dm.spec_len, cond_dim=dm.cond_dim, backbone=backbone)
     print("cuda_count=", torch.cuda.device_count(),
           "CUDA_VISIBLE_DEVICES=", os.environ.get("CUDA_VISIBLE_DEVICES"))
     print("world_size=", trainer.world_size,
@@ -858,7 +979,84 @@ def main(cfg: DictConfig):
           "local_rank=", getattr(trainer, "local_rank", None))
 
     trainer.fit(model, datamodule=dm)
-    trainer.test(model, datamodule=dm, ckpt_path="best")
+
+    # ---- (선택) 테스트 호출: CV면 val만 있으므로 test는 skip, Final이면 test 호출
+    if not is_cv:
+        trainer.test(model, datamodule=dm, ckpt_path="best")
+
+    # ---- 마일스톤 요약 CSV 병합
+    milestones_root = Path(os.getcwd()) / "milestones"
+    milestones_summary_csv = merge_milestone_summaries(milestones_root, split_names=split_names)
+
+    # ---- 최종 지표 계산 (Train + Val|Test)
+    train_metrics = compute_metrics_on_loader(model, dm.train_dataloader(), spec_len)
+    second_loader = dm.val_dataloader() if is_cv else dm.test_dataloader()
+    second_metrics = compute_metrics_on_loader(model, second_loader, spec_len)
+
+    mode_label = "CV" if is_cv else "Final"
+    second_tag = "val" if is_cv else "test"
+    # 컬럼명 규칙: CV_training_sid, CV_val_sid / Final_training_sid, Final_test_sid 등
+    final_rows = {}
+    for k in ("mae", "mse", "rmse", "sid", "softdtw"):
+        if k in train_metrics:
+            final_rows[f"{mode_label}_training_{k}"] = train_metrics[k]
+        if k in second_metrics:
+            final_rows[f"{mode_label}_{second_tag}_{k}"] = second_metrics[k]
+
+    # 메타 정보(선택): fold_tag, job_name, backend
+    final_rows.update({
+        "job_name": str(getattr(cfg.general, "name", "")),
+        "backend": str(getattr(cfg.model, "backend", "")),
+        "fold_tag": ("" if fold_tag is None else str(fold_tag)),
+        "is_cv": bool(is_cv),
+    })
+
+    # ---- 최종 CSV 저장
+    if final_csv_name is None:
+        # fold 구분이 필요하면 파일명에 태그 부여
+        stem = "final_metrics"
+        if fold_tag is not None and str(fold_tag) != "":
+            stem += f"_{fold_tag}"
+        final_csv_name = stem + ".csv"
+
+    final_csv_path = Path(os.getcwd()) / final_csv_name
+    with open(final_csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(final_rows.keys()))
+        w.writeheader()
+        w.writerow(final_rows)
+
+    # 체크포인트 디렉토리 경로 반환
+    ckpt_dir = Path(PROJECT_ROOT) / "checkpoints" / str(getattr(cfg.general, "name", ""))
+    out = {
+        "final_metrics_csv": str(final_csv_path),
+        "milestones_summary_csv": ("" if milestones_summary_csv is None else str(milestones_summary_csv)),
+        "ckpt_dir": str(ckpt_dir),
+    }
+    print("[DONE] final metrics saved →", out["final_metrics_csv"])
+    if milestones_summary_csv:
+        print("[DONE] milestones summary →", milestones_summary_csv)
+    return out
+
+
+# =====================================================================
+#                              Hydra main
+# =====================================================================
+
+@hydra.main(version_base="1.3", config_path="../configs", config_name="config_spectrum")
+def main(cfg: DictConfig):
+    """
+    실행 예)
+      # CV 모드: test_csv를 val로 사용
+      python train_spectrum_pl_reworked.py general.is_cv=true general.name=cv_job1
+
+      # Final 모드: train/test
+      python train_spectrum_pl_reworked.py general.is_cv=false general.name=final_job1
+    """
+    # 외부에서 import 없이도 바로 실행 가능
+    is_cv = bool(getattr(cfg.general, "is_cv", False))
+    fold_tag = getattr(cfg.general, "fold_tag", None)
+    run_from_cfg(cfg, is_cv=is_cv, fold_tag=fold_tag)
+
 
 if __name__ == "__main__":
     main()

@@ -17,7 +17,7 @@ train:
   precision: 32 # 원하면 16-mixed
 
   #############
-  n_epochs: 500
+  n_epochs: 10
   batch_size: 8
   lr: 2e-4
   num_workers: 0
@@ -37,11 +37,11 @@ train:
   seed: 0
   progress_bar: false
   ema_decay: 0
-  milestones: [ 10, 50, 100, 200, 300, 400, 500, 600 ]     # 이 에폭마다 평가 & 그림 저장
+  milestones_metrics: [5, 10]     # ← 이 에폭에 "지표 저장" 실행
+  milestones_plots:   [10]        # ← 이 에폭에 "그림 저장"도 함께 실행
   milestone_n_samples: 32       # plot_all=false일 때 저장할 개수
   milestone_plot_all: true     # true면 해당 split 전체 저장
   milestone_eval_test: true    # true면 test도 함께 평가/저장
-  cv_mode: false                # CV가 아니면 false
 
 dataset:
   name: csvspec
