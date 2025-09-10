@@ -18,6 +18,44 @@ RDLogger.DisableLog('rdApp.*')
 # --------------------------
 # 기본 원자/결합 피처 정의
 # --------------------------
+
+ATOM_FEATURES_VOCAB = {
+    'atomic_num': list(range(1, 119)),                 # 1..118
+    'formal_charge': list(range(-5, 6)),               # -5..+5
+    'hybridization': [
+        Chem.rdchem.HybridizationType.UNSPECIFIED, Chem.rdchem.HybridizationType.S,
+        Chem.rdchem.HybridizationType.SP, Chem.rdchem.HybridizationType.SP2,
+        Chem.rdchem.HybridizationType.SP3, Chem.rdchem.HybridizationType.SP3D,
+        Chem.rdchem.HybridizationType.SP3D2, Chem.rdchem.HybridizationType.OTHER
+    ],
+    'is_aromatic': [0, 1],
+    'total_num_hs': list(range(0, 9)),                 # 0..8
+}
+BOND_FEATURES_VOCAB = {
+    'bond_type': [
+        Chem.rdchem.BondType.SINGLE, Chem.rdchem.BondType.DOUBLE,
+        Chem.rdchem.BondType.TRIPLE, Chem.rdchem.BondType.AROMATIC
+    ],
+    'stereo': [
+        Chem.rdchem.BondStereo.STEREONONE, Chem.rdchem.BondStereo.STEREOANY,
+        Chem.rdchem.BondStereo.STEREOZ, Chem.rdchem.BondStereo.STEREOE,
+        Chem.rdchem.BondStereo.STEREOCIS, Chem.rdchem.BondStereo.STEREOTRANS
+    ],
+    'is_conjugated': [0, 1],
+    'is_in_ring': [0, 1],
+}
+def _oh(v, vocab):
+    if v not in vocab:             # OOV 방지
+        v = vocab[0]
+    idx = vocab.index(v)
+    out = np.zeros(len(vocab), dtype=np.float32)
+    out[idx] = 1.0
+    return out
+
+# 편의상 차원 상수도 잡아두면 좋습니다.
+NODE_DIM = sum(len(v) for v in ATOM_FEATURES_VOCAB.values())    # 118+11+8+2+9 = 148
+EDGE_DIM = sum(len(v) for v in BOND_FEATURES_VOCAB.values())    # 4+6+2+2 = 14
+
 ALLOWED_ATOMS = ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]  # 필요시 확장
 BOND_TYPES = {
     Chem.rdchem.BondType.SINGLE: 0,
@@ -40,18 +78,24 @@ def one_hot(x, choices):
 
 
 def atom_feature(atom: Chem.Atom) -> torch.Tensor:
-    sym = atom.GetSymbol()
-    return torch.tensor(one_hot(sym, ALLOWED_ATOMS), dtype=torch.float32)
+    feats = np.concatenate([
+        _oh(atom.GetAtomicNum(),       ATOM_FEATURES_VOCAB['atomic_num']),
+        _oh(atom.GetFormalCharge(),    ATOM_FEATURES_VOCAB['formal_charge']),
+        _oh(atom.GetHybridization(),   ATOM_FEATURES_VOCAB['hybridization']),
+        _oh(int(atom.GetIsAromatic()), ATOM_FEATURES_VOCAB['is_aromatic']),
+        _oh(atom.GetTotalNumHs(),      ATOM_FEATURES_VOCAB['total_num_hs']),
+    ]).astype(np.float32)
+    return torch.from_numpy(feats)
 
 
 def edge_feature(bond: Chem.Bond) -> torch.Tensor:
-    bt = BOND_TYPES.get(bond.GetBondType(), 0)
-    # one-hot(4) + is_conjugated + is_in_ring => 4 + 1 + 1 = 6
-    oh = [0, 0, 0, 0]
-    oh[bt] = 1
-    feat = oh + [int(bond.GetIsConjugated()), int(bond.IsInRing())]
-    return torch.tensor(feat, dtype=torch.float32)
-
+    feats = np.concatenate([
+        _oh(bond.GetBondType(),          BOND_FEATURES_VOCAB['bond_type']),
+        _oh(bond.GetStereo(),            BOND_FEATURES_VOCAB['stereo']),
+        _oh(int(bond.GetIsConjugated()), BOND_FEATURES_VOCAB['is_conjugated']),
+        _oh(int(bond.IsInRing()),        BOND_FEATURES_VOCAB['is_in_ring']),
+    ]).astype(np.float32)
+    return torch.from_numpy(feats)
 
 def mol_from_row(row, smiles_col: Optional[str], inchi_col: Optional[str], add_h: bool = False) -> Optional[Chem.Mol]:
     """SMILES 우선, 실패 시 InChI. add_h=True면 수소 추가."""
@@ -70,7 +114,7 @@ def mol_from_row(row, smiles_col: Optional[str], inchi_col: Optional[str], add_h
 
 def build_graph(mol: Chem.Mol) -> Data:
     atoms = [atom_feature(a) for a in mol.GetAtoms()]
-    x = torch.stack(atoms, dim=0) if len(atoms) > 0 else torch.zeros((0, len(ALLOWED_ATOMS)), dtype=torch.float32)
+    x = torch.stack(atoms, dim=0) if len(atoms) > 0 else torch.zeros((0, NODE_DIM), dtype=torch.float32)
 
     rows, cols, eattr = [], [], []
     for b in mol.GetBonds():
@@ -85,7 +129,7 @@ def build_graph(mol: Chem.Mol) -> Data:
         edge_attr = torch.stack(eattr, dim=0)
     else:
         edge_index = torch.zeros((2, 0), dtype=torch.long)
-        edge_attr = torch.zeros((0, 6), dtype=torch.float32)
+        edge_attr = torch.zeros((0, EDGE_DIM), dtype=torch.float32)
 
     return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
 

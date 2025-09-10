@@ -1,15 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-grid_search_spectrum_v2.py
-- src 밖 독립 폴더에서 실행 가능하도록 프로젝트 루트를 자동 탐색하여 sys.path에 추가
-- DiGress/GNN 학습 엔진(run_from_cfg) + 내부 CV 루프를 이용해 그리드 서치
-- MODE_GRID(글로벌 노드) 미사용, 대신 cond(y)에 들어갈 전역 피처 조합(GLOBAL_FEATURE_SETS)만 바꿔가며 실행
-- 각 조합마다:
-    (1) K-fold CV (is_cv=True, fold val=검증) → 폴더별 final_metrics_CV*.csv
-    (2) Full-train + 외부 test (is_cv=False) → final_metrics_Final.csv
-  + 조합별 결과 요약 CSV 생성
+grid_search_spectrum_v2.py  (revised: GF=dielectric_constant_avg, pH_label only)
+- src 밖 독립 폴더에서 실행 가능(프로젝트 루트 자동 탐색)
+- run_from_cfg() + 내부 KFold CV 루프 사용
+- MODE_GRID(글로벌 노드) 없음, cond(y) 전역 피처 조합만 변경
 
-실행 예)
+사용 예:
 python grid_search_spectrum_v2.py \
   --train_csv /path/to/train.csv \
   --test_csv  /path/to/test.csv  \
@@ -17,11 +13,7 @@ python grid_search_spectrum_v2.py \
   --out_root  ./grid_runs --n_splits 5 --shuffle
 """
 from __future__ import annotations
-
-import os
-import sys
-import csv
-import argparse
+import os, sys, csv, argparse
 from pathlib import Path
 from contextlib import contextmanager
 from typing import List, Dict, Any
@@ -32,18 +24,15 @@ import numpy as np
 from sklearn.model_selection import KFold
 from omegaconf import OmegaConf, DictConfig, open_dict
 
-# ------------------------------------------------------------
-# 0) 프로젝트 루트/ src 경로 자동 합류
-# ------------------------------------------------------------
+# ---------- 0) 프로젝트 루트/ src 경로 자동 합류 ----------
 def find_project_root(start: Path) -> Path:
-    """start에서 위로 올라가며 src/train_spectrum_GN_multiLoss_v2.py 가 있는 곳을 찾는다."""
     cur = start
     while True:
         src_dir = cur / "src"
+        # 이 파일명은 네 프로젝트 구조에 맞춰 필요 시 수정
         if (src_dir / "train_spectrum_GN_multiLoss_v2.py").exists():
             return cur
         if cur.parent == cur:
-            # 못 찾으면 start를 반환(사용자가 직접 PYTHONPATH 를 맞춘 상태일 수 있음)
             return start
         cur = cur.parent
 
@@ -54,35 +43,25 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.train_spectrum_GN_multiLoss_v2 import run_from_cfg  # noqa: E402
 
-# ------------------------------------------------------------
-# 1) 그리드 정의
-#   - GLOBAL_FEATURE_SETS: cond(y)에 넣을 전역 컬럼 조합
-#   - LOSS_GRID: 멀티로스 조합
-#   - USE_GRADNORM_GRID: GradNorm on/off
-#   - BACKEND_GRID: gnn/digress
-# ------------------------------------------------------------
+# ---------- 1) 그리드 정의 ----------
+# ✔ 요청사항: solvent_phase, is_qm 제외하고 두 컬럼만 조합
 GLOBAL_FEATURE_SETS: List[Dict[str, Any]] = [
-    {"tag": "GF=None",        "cols": []},
-    {"tag": "GF=solv",        "cols": ["solvent_phase"]},
-    {"tag": "GF=pH",          "cols": ["pH_label"]},
-    {"tag": "GF=solv+pH",     "cols": ["solvent_phase", "pH_label"]},
-    {"tag": "GF=dielectric",  "cols": ["dielectric_constant_avg"]},
-    {"tag": "GF=all",         "cols": ["solvent_phase", "is_qm", "dielectric_constant_avg", "pH_label"]},
+    {"tag": "GF=None",         "cols": []},
+    {"tag": "GF=eps",          "cols": ["dielectric_constant_avg"]},
+    {"tag": "GF=pH",           "cols": ["pH_label"]},
+    {"tag": "GF=eps+pH",       "cols": ["dielectric_constant_avg", "pH_label"]},
 ]
 
 LOSS_GRID: List[List[str]] = [
-    ["MSE", "MAE", "SID", "SOFTDTW"],
-    ["MSE", "SID"],
+    #["MSE", "MAE", "SID", "SOFTDTW"],
+    #["MSE", "SID"],
     ["MAE", "SID"],
 ]
 
-USE_GRADNORM_GRID: List[bool] = [True, False]
-
+USE_GRADNORM_GRID: List[bool] = [False] # True, False
 BACKEND_GRID: List[str] = ["digress"]  # 필요 시 ["gnn","digress"]
 
-# ------------------------------------------------------------
-# 2) 유틸
-# ------------------------------------------------------------
+# ---------- 2) 유틸 ----------
 @contextmanager
 def pushd(new_dir: Path):
     prev = Path.cwd()
@@ -94,11 +73,10 @@ def pushd(new_dir: Path):
         os.chdir(prev)
 
 def safe_register_now_resolver():
-    """base YAML에 ${now:...}가 있어도 터지지 않도록 resolver 등록."""
     try:
         OmegaConf.register_new_resolver("now", lambda fmt: datetime.now().strftime(fmt))
     except Exception:
-        pass  # 이미 등록되어 있으면 무시
+        pass
 
 def load_base_cfg(base_cfg_path: Path) -> DictConfig:
     if not base_cfg_path.exists():
@@ -137,35 +115,37 @@ def run_one_cv_and_final(
     seed: int,
     shuffle: bool,
 ) -> Dict[str, Any]:
-    """
-    한 조합으로 CV + Final 실행 후 주요 결과 경로 반환.
-    """
+    # --- 공통 config 클론 + 이번 조합 반영
     cfg0 = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
     with open_dict(cfg0):
         cfg0.model.backend = backend
         cfg0.train.losses = list(losses)
         cfg0.train.use_gradnorm = bool(use_gn)
-
-        # ★ 전역 피처 조합을 dataset.global_cols 로 주입 (데이터모듈이 이를 읽도록 되어 있어야 함)
+        # 전역 피처 컬럼(없으면 빈 리스트)
         cfg0.dataset.global_cols = list(global_cols)
-        # 필요하다면 bool 컬럼도 지정 가능 (기본은 ["is_qm"])
+        # 불리언 컬럼(필요 시 유지)
         cfg0.dataset.boolean_cols = list(getattr(cfg0.dataset, "boolean_cols", ["is_qm"]))
-
-        # CV에서는 그림 OFF (지표만 저장)
+        # CV에서는 그림 OFF(속도)
         cfg0.train.milestones_plots = []
-        # 지표 마일스톤(없으면 비활성)
         cfg0.train.milestones_metrics = cfg0.train.get("milestones_metrics", cfg0.train.get("milestones", []))
 
+    # --- KFold 준비
     df_train = pd.read_csv(train_csv)
     if len(df_train) < n_splits:
         raise ValueError(f"Train rows({len(df_train)}) < n_splits({n_splits})")
 
-    # ---------- (1) CV ----------
-    kf = KFold(n_splits=n_splits, shuffle=shuffle, random_state=(seed if shuffle else None))
+    # (옵션) 없는 전역 컬럼은 자동 제거
+    miss = [c for c in global_cols if c not in df_train.columns]
+    if miss:
+        print(f"[WARN] Missing columns skipped: {miss}")
+        global_cols = [c for c in global_cols if c in df_train.columns]
+
     splits_dir = out_root / "splits"
     splits_dir.mkdir(parents=True, exist_ok=True)
     fold_dirs: List[Path] = []
 
+    # ---------- (1) CV ----------
+    kf = KFold(n_splits=n_splits, shuffle=shuffle, random_state=(seed if shuffle else None))
     for fold_idx, (idx_tr, idx_val) in enumerate(kf.split(df_train), start=1):
         tag = f"{job_prefix}_CV{fold_idx}"
         work = out_root / f"CV{fold_idx}"
@@ -180,7 +160,8 @@ def run_one_cv_and_final(
         with open_dict(cfg):
             cfg.dataset.train_csv = str(tr_csv)
             cfg.dataset.val_csv = None
-            cfg.dataset.test_csv = str(vl_csv)  # is_cv=True → 내부에서 val로 사용
+            # ★ CV 모드: fold의 val을 test_csv 자리에 넣어서 검증으로 사용
+            cfg.dataset.test_csv = str(vl_csv)
             cfg.general.name = tag
             cfg.general.is_cv = True
             cfg.general.fold_tag = f"CV{fold_idx}"
@@ -188,12 +169,12 @@ def run_one_cv_and_final(
         with pushd(work):
             _ = run_from_cfg(cfg, is_cv=True, fold_tag=f"CV{fold_idx}")
 
-    # CV 요약
+    # CV 요약 저장
     cv_summary = out_root / "CV_summary"
     cv_summary.mkdir(parents=True, exist_ok=True)
     rows = []
     for d in fold_dirs:
-        f = d / f"final_metrics_{d.name}.csv"  # final_metrics_CV{i}.csv
+        f = d / f"final_metrics_{d.name}.csv"
         if f.exists():
             rows.append(pd.read_csv(f))
     if rows:
@@ -218,7 +199,6 @@ def run_one_cv_and_final(
         cfg_final.general.name = f"{job_prefix}_Final"
         cfg_final.general.is_cv = False
         cfg_final.general.fold_tag = "Final"
-        # 최종 러닝에서 그림을 원하면 base_cfg 쪽 milestones_plots를 사용 (여기선 건드리지 않음)
 
     with pushd(final_dir):
         _ = run_from_cfg(cfg_final, is_cv=False, fold_tag="Final")
@@ -230,28 +210,22 @@ def run_one_cv_and_final(
         "final_metrics": str(final_dir / "final_metrics_Final.csv"),
     }
 
-# ------------------------------------------------------------
-# 3) 메인
-# ------------------------------------------------------------
+# ---------- 3) 메인 ----------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--train_csv", default=None, help="CV에 사용할 train CSV")
-    ap.add_argument("--test_csv",  default=None, help="Final에서 평가할 external test CSV")
-    ap.add_argument("--base_cfg",  default=None, help="config_spectrum.yaml (미지정시 PROJECT_ROOT/configs/config_spectrum.yaml)")
-    ap.add_argument("--out_root",  default="./grid_runs", help="조합별 결과 상위 폴더")
+    ap.add_argument("--train_csv", default=None)
+    ap.add_argument("--test_csv",  default=None)
+    ap.add_argument("--base_cfg",  default=None,
+                    help="미지정 시 PROJECT_ROOT/configs/config_spectrum.yaml")
+    ap.add_argument("--out_root",  default="./grid_runs")
     ap.add_argument("--n_splits",  type=int, default=5)
     ap.add_argument("--seed",      type=int, default=42)
     ap.add_argument("--shuffle",   action="store_true")
     args = ap.parse_args()
 
-    # base cfg 경로
-    if args.base_cfg:
-        base_cfg_path = Path(args.base_cfg).resolve()
-    else:
-        base_cfg_path = PROJECT_ROOT / "configs" / "config_spectrum.yaml"
+    base_cfg_path = Path(args.base_cfg).resolve() if args.base_cfg else (PROJECT_ROOT / "configs" / "config_spectrum.yaml")
     base_cfg = load_base_cfg(base_cfg_path)
 
-    # train/test 경로: CLI > ENV > base_cfg
     train_csv = Path(args.train_csv or os.getenv("TRAIN_CSV") or base_cfg.dataset.train_csv).resolve()
     test_csv  = Path(args.test_csv  or os.getenv("TEST_CSV")  or base_cfg.dataset.test_csv ).resolve()
     if not train_csv.exists() or not test_csv.exists():
@@ -293,7 +267,6 @@ def main():
                         **res
                     })
 
-    # 조합별 요약
     summary = out_root / f"grid_summary_{tstamp}.csv"
     with open(summary, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(master_rows[0].keys()))
