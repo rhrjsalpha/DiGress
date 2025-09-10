@@ -33,8 +33,11 @@ class CEPerClass(Metric):
             raise ValueError(f"Unexpected target shape: {target.shape}")
 
         # --- preds/target가 이미 마스크되어 있는 경우와 아닌 경우를 모두 처리 ---
+        #print(probs_class.shape)
+        #print(target_class.shape)
         # 케이스 A) preds가 2D (K,) 또는 (K,C) → 이미 마스크된 상태
         if probs_class.dim() == 1:
+            #print("Case A")
             probs_flat = probs_class  # (K,)
             if target_class.dim() >= 2:
                 # target이 (K,) 이면 그대로, (B,N[,*])이면 유효 항만 골라 길이 K가 되도록 맞춤
@@ -49,9 +52,13 @@ class CEPerClass(Metric):
 
         # 케이스 B) preds가 3D/4D → 아직 마스크 전, 평탄화 후 동일 마스크 적용
         else:
+            #print("Case B")
             probs_flat = probs_class.reshape(-1)
+            #print(probs_flat.shape)
             tgt_flat = target_class.reshape(-1)
+            #print(tgt_flat.shape)
             m_flat = valid_mask.reshape(-1)
+            #print(m_flat.shape)
             probs_flat = probs_flat[m_flat]
             tgt_flat = tgt_flat[m_flat]
 
@@ -196,6 +203,7 @@ class TrainMolecularMetricsDiscrete(nn.Module):
         self.train_bond_metrics = BondMetricsCE()
 
     def forward(self, masked_pred_X, masked_pred_E, true_X, true_E, log: bool):
+        # print("masked_pred_X.shape, masked_pred_E.shape, true_X.shape, true_E.shape",masked_pred_X.shape, masked_pred_E.shape, true_X.shape, true_E.shape)
         self.train_atom_metrics(masked_pred_X, true_X)
         self.train_bond_metrics(masked_pred_E, true_E)
         if log:

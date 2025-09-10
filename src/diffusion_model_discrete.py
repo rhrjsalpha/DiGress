@@ -17,7 +17,7 @@ from src import utils
 
 class DiscreteDenoisingDiffusion(pl.LightningModule):
     def __init__(self, cfg, dataset_infos, train_metrics, sampling_metrics, visualization_tools, extra_features,
-                 domain_features):
+                 domain_features, y_loss_mode):
         super().__init__()
 
         input_dims = dataset_infos.input_dims
@@ -39,7 +39,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         self.dataset_info = dataset_infos
 
-        self.train_loss = TrainLossDiscrete(self.cfg.model.lambda_train)
+        self.train_loss = TrainLossDiscrete(self.cfg.model.lambda_train, y_loss_mode)
 
         self.val_nll = NLL()
         self.val_X_kl = SumExceptBatchKL()
@@ -431,11 +431,19 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         sampled_t = diffusion_utils.sample_discrete_features(probX=probX, probE=probE, node_mask=node_mask)
 
-        X_t = F.one_hot(sampled_t.X, num_classes=self.Xdim_output)
-        E_t = F.one_hot(sampled_t.E, num_classes=self.Edim_output)
+        # 기존
+        #X_t = F.one_hot(sampled_t.X, num_classes=self.Xdim_output)
+        #E_t = F.one_hot(sampled_t.E, num_classes=self.Edim_output)
+        #assert (X.shape == X_t.shape) and (E.shape == E_t.shape)
+
+        #z_t = utils.PlaceHolder(X=X_t, E=E_t, y=y).type_as(X_t).mask(node_mask)
+        # 변경 (one-hot → float32/float16 등 모델 dtype으로 캐스팅)
+        X_t = F.one_hot(sampled_t.X, num_classes=self.Xdim_output).to(dtype=probX.dtype)
+        E_t = F.one_hot(sampled_t.E, num_classes=self.Edim_output).to(dtype=probE.dtype)
         assert (X.shape == X_t.shape) and (E.shape == E_t.shape)
 
-        z_t = utils.PlaceHolder(X=X_t, E=E_t, y=y).type_as(X_t).mask(node_mask)
+        # 굳이 .type_as(X_t)로 long에 캐스팅할 필요가 없습니다.
+        z_t = utils.PlaceHolder(X=X_t, E=E_t, y=y).mask(node_mask)
 
         noisy_data = {'t_int': t_int, 't': t_float, 'beta_t': beta_t, 'alpha_s_bar': alpha_s_bar,
                       'alpha_t_bar': alpha_t_bar, 'X_t': z_t.X, 'E_t': z_t.E, 'y_t': z_t.y, 'node_mask': node_mask}

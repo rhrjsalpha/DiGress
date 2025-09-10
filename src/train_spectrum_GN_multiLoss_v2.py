@@ -468,7 +468,8 @@ class GraphSpectrumNet(nn.Module):
         g = global_mean_pool(h, batch)
         if cond is not None and cond.numel() > 0:
             g = torch.cat([g, cond], dim=-1)
-        return self.readout(g)
+        output = self.readout(g)
+        return output
 
 # ---- DiGress 백본 ----
 from src.models.transformer_model import GraphTransformer

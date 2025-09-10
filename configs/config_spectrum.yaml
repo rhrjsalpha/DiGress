@@ -17,8 +17,8 @@ train:
   precision: 32 # 원하면 16-mixed
 
   #############
-  n_epochs: 10
-  batch_size: 8
+  n_epochs: 500
+  batch_size: 256
   lr: 2e-4
   num_workers: 0
   save_model: true
@@ -26,7 +26,7 @@ train:
   clip_algo: "norm"
 
   # 멀티로스 + GradNorm 옵션
-  losses: ["MSE","MAE","SOFTDTW","SID"]      # ["MSE","MAE","SOFTDTW","SID"] 등
+  losses: ["MSE"]      # ["MSE","MAE","SOFTDTW","SID"] 등
   use_gradnorm: true
   alpha: 0.12
   softdtw_gamma: 0.2
@@ -37,17 +37,17 @@ train:
   seed: 0
   progress_bar: false
   ema_decay: 0
-  milestones_metrics: [5, 10]     # ← 이 에폭에 "지표 저장" 실행
-  milestones_plots:   [10]        # ← 이 에폭에 "그림 저장"도 함께 실행
+  milestones_metrics: [500]     # ← 이 에폭에 "지표 저장" 실행
+  milestones_plots:   [500]        # ← 이 에폭에 "그림 저장"도 함께 실행
   milestone_n_samples: 32       # plot_all=false일 때 저장할 개수
   milestone_plot_all: true     # true면 해당 split 전체 저장
   milestone_eval_test: true    # true면 test도 함께 평가/저장
 
 dataset:
   name: csvspec
-  train_csv: "/root/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps.csv"
+  train_csv: "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
   val_csv: ""    # 빈 문자열 => train에서 90/10 split
-  test_csv:  "/root/PycharmProjects/DiGress/data/csv/EM_stratified_test_clustered_resplit_with_mu_eps.csv"
+  test_csv:  "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"
   spec_start: 200
   spec_end: 800
   solvent_vocab: ["solid","liquid","gas"]
@@ -57,7 +57,7 @@ dataset:
   add_h: false
 
 model:
-  backend: digress         # gnn | digress
+  backend: gnn         # gnn | digress
   hidden: 256
   layers: 4 # 4
   dropout: 0.1

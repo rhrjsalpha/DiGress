@@ -205,7 +205,7 @@ def main(cfg: DictConfig):
 
         model_kwargs = {'dataset_infos': dataset_infos, 'train_metrics': train_metrics,
                         'sampling_metrics': sampling_metrics, 'visualization_tools': visualization_tools,
-                        'extra_features': extra_features, 'domain_features': domain_features}
+                        'extra_features': extra_features, 'domain_features': domain_features, 'y_loss_mode': getattr(cfg.train, "y_loss_mode", "none"),}
 
     elif dataset_config["name"] in ['qm9', 'guacamol', 'moses']:
         from metrics.molecular_metrics import TrainMolecularMetrics, SamplingMolecularMetrics

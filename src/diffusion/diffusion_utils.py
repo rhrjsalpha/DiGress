@@ -260,39 +260,37 @@ def check_issues_norm_values(gamma, norm_val1, norm_val2, num_stdevs=8):
 
 
 def sample_discrete_features(probX, probE, node_mask):
-    ''' Sample features from multinomial distribution with given probabilities (probX, probE, proby)
-        :param probX: bs, n, dx_out        node features
-        :param probE: bs, n, n, de_out     edge features
-        :param proby: bs, dy_out           global features.
-    '''
+    # probX: (bs, n, dx), probE: (bs, n, n, de)
     bs, n, _ = probX.shape
-    # Noise X
-    # The masked rows should define probability distributions as well
-    probX[~node_mask] = 1 / probX.shape[-1]
 
-    # Flatten the probability tensor to sample with multinomial
-    probX = probX.reshape(bs * n, -1)       # (bs * n, dx_out)
+    # ensure boolean masks
+    node_mask = node_mask.bool()
 
-    # Sample X
-    X_t = probX.multinomial(1)                                  # (bs * n, 1)
-    X_t = X_t.reshape(bs, n)     # (bs, n)
+    # --- X: masked rows도 확률분포 되도록 ---
+    probX = probX.clone()
+    probX[~node_mask] = 1.0 / probX.shape[-1]
 
-    # Noise E
-    # The masked rows should define probability distributions as well
-    inverse_edge_mask = ~(node_mask.unsqueeze(1) * node_mask.unsqueeze(2))
-    diag_mask = torch.eye(n).unsqueeze(0).expand(bs, -1, -1)
+    # --- E: inverse edge + 대각선 마스크 ---
+    probE = probE.clone()
+    # 두 노드 중 하나라도 pad면 edge mask false
+    edge_mask = node_mask.unsqueeze(1) & node_mask.unsqueeze(2)        # (bs,n,n) bool
+    inverse_edge_mask = ~edge_mask                                     # (bs,n,n) bool
 
-    probE[inverse_edge_mask] = 1 / probE.shape[-1]
-    probE[diag_mask.bool()] = 1 / probE.shape[-1]
+    # 장치 맞춘 대각선 마스크
+    diag_mask = torch.eye(n, dtype=torch.bool, device=probE.device).unsqueeze(0).expand(bs, -1, -1)
 
-    probE = probE.reshape(bs * n * n, -1)    # (bs * n * n, de_out)
+    # masked_fill_ 로 안전하게 채우기
+    fill_val = 1.0 / probE.shape[-1]
+    probE.masked_fill_(inverse_edge_mask.unsqueeze(-1), fill_val)      # (bs,n,n,1) broadcast
+    probE.masked_fill_(diag_mask.unsqueeze(-1), fill_val)
 
-    # Sample E
-    E_t = probE.multinomial(1).reshape(bs, n, n)   # (bs, n, n)
+    # --- 샘플링 ---
+    X_t = probX.reshape(bs * n, -1).multinomial(1).reshape(bs, n)
+    E_t = probE.reshape(bs * n * n, -1).multinomial(1).reshape(bs, n, n)
     E_t = torch.triu(E_t, diagonal=1)
-    E_t = (E_t + torch.transpose(E_t, 1, 2))
+    E_t = E_t + E_t.transpose(1, 2)
 
-    return PlaceHolder(X=X_t, E=E_t, y=torch.zeros(bs, 0).type_as(X_t))
+    return PlaceHolder(X=X_t, E=E_t, y=torch.zeros(bs, 0, device=X_t.device, dtype=X_t.dtype))
 
 
 def compute_posterior_distribution(M, M_t, Qt_M, Qsb_M, Qtb_M):

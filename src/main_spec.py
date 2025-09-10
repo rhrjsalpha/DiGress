@@ -211,6 +211,7 @@ def main(cfg: DictConfig):
         'visualization_tools': visualization_tools,
         'extra_features': extra_features,
         'domain_features': domain_features,
+        'y_loss_mode': getattr(cfg.train, "y_loss_mode", "none"),
     }
 
     # ── (2) resume/test-only 처리 ───────────────────────────────────────────
