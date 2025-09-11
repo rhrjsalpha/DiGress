@@ -107,6 +107,26 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         dense_data, node_mask = utils.to_dense(data.x, data.edge_index, data.edge_attr, data.batch)
         dense_data = dense_data.mask(node_mask)
         X, E = dense_data.X, dense_data.E
+
+        with torch.no_grad():
+            # 배치 전체에서 "진짜 노드이면서 X가 전부 0"인 위치 추출
+            real = node_mask
+            zero_real = real & (X.sum(-1) == 0)
+            n_bad = int(zero_real.sum().item())
+            print(f"[RAW-X check] zero one-hot on real nodes: {n_bad}")
+            if n_bad > 0:
+                b_idx, n_idx = torch.nonzero(zero_real, as_tuple=True)
+                # 많으면 앞 몇 개만
+                for k in range(min(5, n_bad)):
+                    b, i = int(b_idx[k]), int(n_idx[k])
+                    print(f"[RAW-X bad] batch={b} node={i} X[b,i,:10]={X[b, i, :10].tolist()}")
+                    # 원자 정보가 있으면 같이 찍기 (있을 때만)
+                    if hasattr(data, "z"):
+                        print("  z[b,i]=", int(data.z[data.batch == b][i].item()))
+                # 그래프 id 보기
+                print("[RAW-X bad graphs]:",
+                      torch.unique(data.batch[torch.nonzero(zero_real, as_tuple=False)[:, 0]]).tolist())
+
         noisy_data = self.apply_noise(X, E, data.y, node_mask)
         extra_data = self.compute_extra_data(noisy_data)
         pred = self.forward(noisy_data, extra_data, node_mask)
@@ -405,6 +425,69 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         return utils.PlaceHolder(X=probX0, E=probE0, y=proby0)
 
     def apply_noise(self, X, E, y, node_mask):
+
+        # === DEBUG HELPERS (apply_noise 내부에 바로 넣어도 됩니다) ===
+        def _print_prob_nodes(tag, P, node_mask):
+            # P: (bs, n, d)
+            flat = P.reshape(-1, P.size(-1))
+            row_sum = flat.sum(-1)
+            m = node_mask.reshape(-1)
+
+            any_neg = (flat < 0).any().item()
+            any_nan = (~torch.isfinite(flat)).any().item()
+            minsum = row_sum.min().item()
+            z_u = (row_sum[m] <= 0).sum().item()
+            z_m = (row_sum[~m] <= 0).sum().item()
+            print(
+                f"[{tag}] X  min_row_sum={minsum:.6f}  zero.unmasked={z_u}  zero.masked={z_m}  neg={any_neg}  nan={any_nan}")
+
+            if z_u > 0:
+                bad_idx = torch.nonzero((row_sum <= 0) & m, as_tuple=False).squeeze()[0].item()
+                bs, n, _ = P.shape
+                b, i = divmod(bad_idx, n)
+                print(f"[{tag}] X  first_bad: batch={b} node={i}  P[b,i,:10]={P[b, i, :10].detach().cpu().numpy()}")
+
+        def _print_prob_edges(tag, P, node_mask):
+            # P: (bs, n, n, de)
+            bs, n, _, de = P.shape
+            allowed = (node_mask.unsqueeze(1) & node_mask.unsqueeze(2))  # 실노드 간
+            diag = torch.eye(n, device=P.device, dtype=torch.bool).unsqueeze(0).expand(bs, n, n)
+            valid = (allowed & (~diag)).reshape(-1)  # (bs*n*n,)
+            flat = P.reshape(-1, de)
+            row_sum = flat.sum(-1)
+
+            any_neg = (flat < 0).any().item()
+            any_nan = (~torch.isfinite(flat)).any().item()
+            minsum_all = row_sum.min().item()
+            minsum_val = row_sum[valid].min().item() if valid.any() else float('nan')
+            z_val = (row_sum[valid] <= 0).sum().item() if valid.any() else 0
+            print(
+                f"[{tag}] E  min_row_sum(all)={minsum_all:.6f}  min_row_sum(valid)={minsum_val:.6f}  zero.valid={z_val}  neg={any_neg}  nan={any_nan}")
+
+            if z_val > 0:
+                first = torch.nonzero((row_sum <= 0) & valid, as_tuple=False).squeeze()[0].item()
+                b = first // (n * n)
+                ij = first % (n * n)
+                i, j = divmod(ij, n)
+                print(f"[{tag}] E  first_bad: batch={b} i={i} j={j}  P[b,i,j,:]={P[b, i, j, :].detach().cpu().numpy()}")
+
+        # === /HELPERS ===
+
+        # --- DEBUG: node_mask quick view ---
+        bs, n, dx = X.shape
+        print(
+            f"[apply_noise] X={tuple(X.shape)} E={tuple(E.shape)} y={tuple(y.shape) if torch.is_tensor(y) else type(y)}")
+        print(
+            f"[apply_noise] node_mask.shape={tuple(node_mask.shape)}, dtype={node_mask.dtype}, device={node_mask.device}")
+        true_per_graph = node_mask.sum(-1)  # (bs,)
+        print(f"[apply_noise] true_nodes_per_graph={true_per_graph.tolist()} (max_n={n})")
+
+        # 앞 2개 그래프만 0/1로 미리보기 (너무 길면 잘림)
+        to_show_b = min(2, bs)
+        to_show_n = min(40, n)
+        print("[apply_noise] node_mask preview (first 2 graphs, first 40 nodes):")
+        print(node_mask[:to_show_b, :to_show_n].to(torch.int).cpu().numpy())
+        # -----------------------------------
         """ Sample noise and apply it to the data. """
 
         # Sample a timestep t.
@@ -428,6 +511,20 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # Compute transition probabilities
         probX = X @ Qtb.X  # (bs, n, dx_out)
         probE = E @ Qtb.E.unsqueeze(1)  # (bs, n, n, de_out)
+
+        # 샘플링 직전 상태 점검
+        #_print_prob_nodes("pre-sample", probX, node_mask)
+        #_print_prob_edges("pre-sample", probE, node_mask)
+
+        # (선택) t도 같이 확인하면 특정 t에서만 깨지는지 알 수 있음
+        print("[apply_noise] t_int:", t_int.view(-1).tolist())
+
+        sumX = X.sum(-1)  # (bs, n)
+        bad_real = (sumX == 0) & node_mask
+        print("[X-check] zero one-hot on real nodes:", bad_real.sum().item())
+        if bad_real.any():
+            b, i = torch.nonzero(bad_real, as_tuple=False)[0].tolist()
+            print("X[b,i]=", X[b, i].detach().cpu().numpy())
 
         sampled_t = diffusion_utils.sample_discrete_features(probX=probX, probE=probE, node_mask=node_mask)
 

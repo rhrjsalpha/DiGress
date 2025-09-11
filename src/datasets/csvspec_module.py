@@ -24,6 +24,9 @@ RDLogger.DisableLog('rdApp.*')
 # 기본 원자/결합 피처 정의
 # --------------------------
 ALLOWED_ATOMS = ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]  # 필요시 확장
+UNK_TOKEN = "<UNK>"
+ATOM_VOCAB = ALLOWED_ATOMS + [UNK_TOKEN]
+ATOM2IDX = {sym: i for i, sym in enumerate(ATOM_VOCAB)}
 BOND_TYPES = {
     Chem.rdchem.BondType.SINGLE: 0,
     Chem.rdchem.BondType.DOUBLE: 1,
@@ -58,7 +61,10 @@ def one_hot(x, choices):
 
 def atom_feature(atom: Chem.Atom) -> torch.Tensor:
     sym = atom.GetSymbol()
-    return torch.tensor(one_hot(sym, ALLOWED_ATOMS), dtype=torch.float32)
+    idx = ATOM2IDX.get(sym, ATOM2IDX[UNK_TOKEN])  # vocab 밖이면 UNK로
+    v = torch.zeros(len(ATOM_VOCAB), dtype=torch.float32)
+    v[idx] = 1.0
+    return v
 
 
 def edge_feature(bond: Chem.Bond) -> torch.Tensor:
@@ -569,29 +575,32 @@ class CSVSpecInfos(AbstractDatasetInfos):
     def __init__(self, datamodule: CSVSpecDataModule, remove_h: bool = False):
         # 원자 타입: csv_spectrum_dataset.py의 ALLOWED_ATOMS와 일치
         # (여기선 고정 맵; 필요한 경우 datamodule에서 등장한 타입만 추려써도 OK)
-        atom_decoder = ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
+        atom_decoder = ATOM_VOCAB[:]  # ["H","C","N","O","F","P","S","Cl","Br","I"]
         self.atom_encoder = {sym: i for i, sym in enumerate(atom_decoder)}
         self.atom_decoder = atom_decoder
         self.num_atom_types = len(self.atom_decoder)
         self.remove_h = bool(remove_h)
 
         # 결합 타입은 DiGress 규약: 0=no-bond, 1=single, 2=double, 3=triple, 4=aromatic
-        self.valencies = [1, 4, 3, 2, 1, 3, 2, 1, 1, 1]  # 대중적 정수 원자가(간단 버전)
-        self.atom_weights = {  # 분자량 근사
-            0: 1,   1: 12,  2: 14,  3: 16,  4: 19,
-            5: 31,  6: 32,  7: 35,  8: 80,  9: 127,
-        }
+        base_valencies = [1, 4, 3, 2, 1, 3, 2, 1, 1, 1]  # H..I
+        if datamodule.dx > len(base_valencies):
+            base_valencies = base_valencies + [0] * (datamodule.dx - len(base_valencies))  # UNK=0
+        self.valencies = base_valencies[:datamodule.dx]
+
+        base_weights = { 0: 1, 1: 12, 2: 14, 3: 16, 4: 19, 5: 31, 6: 32, 7: 35, 8: 80, 9: 127 }
+        self.atom_weights = {i: float(base_weights.get(i, 0.0)) for i in range(datamodule.dx)}
+
         self.max_weight = 600  # 데이터에 맞게 넉넉히
 
         # 통계(노드 수/노드 타입/엣지 타입) 대략 계산
         # n_nodes 분포 및 max_n_nodes
         import numpy as np
         sizes = []
-        node_type_hist = torch.zeros(self.num_atom_types, dtype=torch.float)
-        edge_type_hist = torch.zeros(5, dtype=torch.float)  # 5채널
+        node_type_hist = torch.zeros(datamodule.dx, dtype=torch.float)  # 11dim
+        edge_type_hist = torch.zeros(5, dtype=torch.float) # 5dim
         for g in datamodule.train_dataset:
             sizes.append(g.x.size(0))
-            node_type_hist += g.x.sum(dim=0).to(torch.float)
+            node_type_hist += g.x.sum(dim=0).to(torch.float)  # g.x.shape[-1] == datamodule.dx
             if g.edge_attr.numel() > 0:
                 edge_type_hist += g.edge_attr.sum(dim=0).to(torch.float)
 

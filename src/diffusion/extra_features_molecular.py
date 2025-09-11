@@ -1,6 +1,6 @@
 import torch
 from src import utils
-
+import torch.nn.functional as F
 
 class ExtraMolecularFeatures:
     def __init__(self, dataset_infos):

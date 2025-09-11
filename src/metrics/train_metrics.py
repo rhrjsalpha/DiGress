@@ -47,20 +47,18 @@ class TrainLoss(nn.Module):
             metric.reset()
 
     def log_epoch_metrics(self):
-        epoch_node_loss = self.node_loss.compute() if hasattr(self.node_loss, "compute") else -1
-        epoch_edge_loss = self.edge_loss.compute() if hasattr(self.edge_loss, "compute") else -1
+        epoch_node_loss = self.node_loss.compute() if getattr(self.node_loss, "total_samples", 0) > 0 else -1
+        epoch_edge_loss = self.edge_loss.compute() if getattr(self.edge_loss, "total_samples", 0) > 0 else -1
 
-        yl = getattr(self, "y_loss", None)
-        if hasattr(yl, "compute") and getattr(yl, "total_samples", 0) > 0:
-            epoch_y_loss = yl.compute()
+        # ✅ y_loss 쪽은 None 가능성/샘플 수 0 둘 다 가드
+        if (self.y_loss is not None) and (getattr(self.y_loss, "total_samples", 0) > 0):
+            epoch_y_loss = self.y_loss.compute()
         else:
             epoch_y_loss = -1
 
-        to_log = {
-            "train_epoch/x_CE": epoch_node_loss,
-            "train_epoch/E_CE": epoch_edge_loss,
-            "train_epoch/y": epoch_y_loss,
-        }
+        to_log = {"train_epoch/x_CE": epoch_node_loss,
+                  "train_epoch/E_CE": epoch_edge_loss,
+                  "train_epoch/y_CE": epoch_y_loss}
         if wandb.run:
             wandb.log(to_log, commit=False)
         return to_log
@@ -184,7 +182,9 @@ class TrainLossDiscrete(nn.Module):
     def log_epoch_metrics(self):
         epoch_node_loss = self.node_loss.compute() if self.node_loss.total_samples > 0 else -1
         epoch_edge_loss = self.edge_loss.compute() if self.edge_loss.total_samples > 0 else -1
-        epoch_y_loss = self.train_y_loss.compute() if self.y_loss.total_samples > 0 else -1
+        # epoch_y_loss = self.train_y_loss.compute() if self.y_loss.total_samples > 0 else -1
+        epoch_y_loss = self.y_loss.compute() if (
+                    self.y_loss is not None and getattr(self.y_loss, "total_samples", 0) > 0) else -1
 
         to_log = {"train_epoch/x_CE": epoch_node_loss,
                   "train_epoch/E_CE": epoch_edge_loss,

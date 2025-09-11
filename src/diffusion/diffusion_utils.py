@@ -285,18 +285,39 @@ def sample_discrete_features(probX, probE, node_mask):
     probE.masked_fill_(diag_mask.unsqueeze(-1), fill_val)
 
     # --- 샘플링 ---
+    flatX = probX.reshape(-1, probX.size(-1))
+    print("[flatX] min_row_sum:",
+          flatX.sum(-1).min().item(),
+          "any_neg:", (flatX < 0).any().item(),
+          "any_nan:", (~torch.isfinite(flatX)).any().item())
+
+    flat = probX.reshape(-1, probX.size(-1))
+    row_sum = flat.sum(-1)
+    m = node_mask.reshape(-1)
+    print("[probX.unmasked] zero_rows:", (row_sum[m] <= 0).sum().item())
+    print("[probX.masked]   zero_rows:", (row_sum[~m] <= 0).sum().item())
+
     X_t = probX.reshape(bs * n, -1).multinomial(1).reshape(bs, n)
+
+    # multinomial 직전(엣지)
+    flatE = probE.reshape(-1, probE.size(-1))
+    #print("[flatE] min_row_sum:",
+    #      flatE.sum(-1).min().item(),
+    #      "any_neg:", (flatE < 0).any().item(),
+    #      "any_nan:", (~torch.isfinite(flatE)).any().item())
     E_t = probE.reshape(bs * n * n, -1).multinomial(1).reshape(bs, n, n)
+
     E_t = torch.triu(E_t, diagonal=1)
     E_t = E_t + E_t.transpose(1, 2)
 
     return PlaceHolder(X=X_t, E=E_t, y=torch.zeros(bs, 0, device=X_t.device, dtype=X_t.dtype))
 
 
-def compute_posterior_distribution(M, M_t, Qt_M, Qsb_M, Qtb_M):
+def compute_posterior_distribution(M, M_t, Qt_M, Qsb_M, Qtb_M, mask_N=None, kind="X", debug=True):
     ''' M: X or E
         Compute xt @ Qt.T * x0 @ Qsb / x0 @ Qtb @ xt.T
     '''
+    print("compute_posterior_distribution")
     # Flatten feature tensors
     M = M.flatten(start_dim=1, end_dim=-2).to(torch.float32)        # (bs, N, d) with N = n or n * n
     M_t = M_t.flatten(start_dim=1, end_dim=-2).to(torch.float32)    # same
@@ -384,7 +405,7 @@ def mask_distributions(true_X, true_E, pred_X, pred_E, node_mask):
 
 
 def posterior_distributions(X, E, y, X_t, E_t, y_t, Qt, Qsb, Qtb):
-    prob_X = compute_posterior_distribution(M=X, M_t=X_t, Qt_M=Qt.X, Qsb_M=Qsb.X, Qtb_M=Qtb.X)   # (bs, n, dx)
+    prob_X = compute_posterior_distribution(M=X, M_t=X_t, Qt_M=Qt.X, Qsb_M=Qsb.X, Qtb_M=Qtb.X, mask_N=node_mask, kind="X", debug=True)   # (bs, n, dx)
     prob_E = compute_posterior_distribution(M=E, M_t=E_t, Qt_M=Qt.E, Qsb_M=Qsb.E, Qtb_M=Qtb.E)   # (bs, n * n, de)
 
     return PlaceHolder(X=prob_X, E=prob_E, y=y_t)
@@ -421,3 +442,26 @@ def sample_discrete_feature_noise(limit_dist, node_mask):
     return PlaceHolder(X=U_X, E=U_E, y=U_y).mask(node_mask)
 
 
+def _dbg_stat_1d(name, t, mask_N=None):
+    # t: (bs, N)  (예: 분자합, 분모)
+    flat = t.reshape(-1)
+    any_nan = (~torch.isfinite(flat)).any().item()
+    minv    = torch.nanmin(flat).item() if torch.isfinite(flat).any() else float('nan')
+    zeros   = (flat <= 0).sum().item()
+    msg = f"[{name}] min={minv:.3e} zeros(all)={zeros} any_nan={any_nan}"
+    if mask_N is not None:
+        m = mask_N.reshape(-1)
+        zeros_u = (flat[m]  <= 0).sum().item()
+        zeros_m = (flat[~m] <= 0).sum().item()
+        msg += f" | zeros(unmasked)={zeros_u} zeros(masked)={zeros_m}"
+    print(msg)
+
+def _dbg_first_bad(name, num_sum, den, mask_N):
+    # num_sum, den: (bs,N)
+    bad = ((num_sum <= 0) | (den <= 0) | (~torch.isfinite(num_sum)) | (~torch.isfinite(den)))
+    if mask_N is not None:
+        bad = bad & mask_N
+    idx = torch.nonzero(bad.reshape(-1), as_tuple=False).squeeze()
+    if idx.numel() > 0:
+        i0 = idx[0].item()
+        print(f"[{name}] first_bad_flat_idx={i0}  num_sum={num_sum.reshape(-1)[i0].item():.3e}  den={den.reshape(-1)[i0].item():.3e}")

@@ -44,7 +44,7 @@ train:
   milestone_eval_test: true    # true면 test도 함께 평가/저장
 
 dataset:
-  name: csvspec
+  name: "csvspec"
   train_csv: "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
   val_csv: ""    # 빈 문자열 => train에서 90/10 split
   test_csv:  "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"
@@ -65,7 +65,7 @@ model:
 
 hydra:
   run:
-    dir: ./outputs_spectrum/${general.name}/${now:%Y%m%d_%H%M%S}
+    dir: "./outputs_spectrum/${general.name}/${now:%Y%m%d_%H%M%S}"
   job:
     chdir: true         # run.dir로 작업 폴더 이동(기본)
   output_subdir: null   # 불필요한 config 복사 폴더 방지(선택)
