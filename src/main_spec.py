@@ -197,6 +197,14 @@ def main(cfg: DictConfig):
     # (선택) 모델 차원 계산 훅
     infos.compute_input_output_dims(datamodule=dm, extra_features=extra_features, domain_features=domain_features)
 
+    # src/main_spec.py, dm/infos 만든 직후
+    print(f"[DIM] train y_dim={dm.train_dataset.y_dim}, "
+          f"val y_dim={getattr(dm.val_dataset, 'y_dim', None)}, "
+          f"test y_dim={getattr(dm.test_dataset, 'y_dim', None)}")
+    print(
+        f"[DIM] spectrum range={getattr(cfg.dataset, 'spectrum_start', 200)}..{getattr(cfg.dataset, 'spectrum_end', 800)}, "
+        f"global_cols={getattr(cfg.dataset, 'global_cols', [])}")
+
     # metrics / viz
     train_metrics = (TrainMolecularMetricsDiscrete(infos)
                      if cfg.model.type == 'discrete' else

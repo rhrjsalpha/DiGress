@@ -108,25 +108,6 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         dense_data = dense_data.mask(node_mask)
         X, E = dense_data.X, dense_data.E
 
-        with torch.no_grad():
-            # 배치 전체에서 "진짜 노드이면서 X가 전부 0"인 위치 추출
-            real = node_mask
-            zero_real = real & (X.sum(-1) == 0)
-            n_bad = int(zero_real.sum().item())
-            print(f"[RAW-X check] zero one-hot on real nodes: {n_bad}")
-            if n_bad > 0:
-                b_idx, n_idx = torch.nonzero(zero_real, as_tuple=True)
-                # 많으면 앞 몇 개만
-                for k in range(min(5, n_bad)):
-                    b, i = int(b_idx[k]), int(n_idx[k])
-                    print(f"[RAW-X bad] batch={b} node={i} X[b,i,:10]={X[b, i, :10].tolist()}")
-                    # 원자 정보가 있으면 같이 찍기 (있을 때만)
-                    if hasattr(data, "z"):
-                        print("  z[b,i]=", int(data.z[data.batch == b][i].item()))
-                # 그래프 id 보기
-                print("[RAW-X bad graphs]:",
-                      torch.unique(data.batch[torch.nonzero(zero_real, as_tuple=False)[:, 0]]).tolist())
-
         noisy_data = self.apply_noise(X, E, data.y, node_mask)
         extra_data = self.compute_extra_data(noisy_data)
         pred = self.forward(noisy_data, extra_data, node_mask)
@@ -224,7 +205,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 samples.extend(self.sample_batch(batch_id=ident, batch_size=to_generate, num_nodes=None,
                                                  save_final=to_save,
                                                  keep_chain=chains_save,
-                                                 number_chain_steps=self.number_chain_steps))
+                                                 number_chain_steps=self.number_chain_steps, ))
                 ident += to_generate
 
                 samples_left_to_save -= to_save
@@ -245,6 +226,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         self.test_E_logp.reset()
         if self.local_rank == 0:
             utils.setup_wandb(self.cfg)
+        self._test_condY = []
 
     def test_step(self, data, i):
         dense_data, node_mask = utils.to_dense(data.x, data.edge_index, data.edge_attr, data.batch)
@@ -253,6 +235,11 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         extra_data = self.compute_extra_data(noisy_data)
         pred = self.forward(noisy_data, extra_data, node_mask)
         nll = self.compute_val_loss(pred, noisy_data, dense_data.X, dense_data.E, data.y, node_mask, test=True)
+
+        # ▶ cond_y(607) 수집
+        # data.y: [B, 607] (스펙트럼+글로벌)
+        self._test_condY.append(data.y.detach().cpu())
+
         return {'loss': nll}
 
     def on_test_epoch_end(self) -> None:
@@ -275,6 +262,10 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         self.print(f'Test loss: {test_nll :.4f}')
 
+        if len(self._test_condY) == 0:
+            raise RuntimeError("No test cond_y collected. Ensure test_step appends to self._test_condY.")
+        condY_all = torch.cat(self._test_condY, dim=0)  # [N_test, 607]
+
         samples_left_to_generate = self.cfg.general.final_model_samples_to_generate
         samples_left_to_save = self.cfg.general.final_model_samples_to_save
         chains_left_to_save = self.cfg.general.final_model_chains_to_save
@@ -288,8 +279,34 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             to_generate = min(samples_left_to_generate, bs)
             to_save = min(samples_left_to_save, bs)
             chains_save = min(chains_left_to_save, bs)
-            samples.extend(self.sample_batch(id, to_generate, num_nodes=None, save_final=to_save,
-                                             keep_chain=chains_save, number_chain_steps=self.number_chain_steps))
+
+            # ▶ cond_y_base slice 준비 (필요 시 순환)
+            if id + to_generate <= condY_all.size(0):
+                cond_slice = condY_all[id:id + to_generate]
+            else:
+                # test set보다 많이 뽑을 때는 앞에서부터 순환
+                need = to_generate
+                chunks = []
+                pos = id
+                while need > 0:
+                    take = min(need, condY_all.size(0) - (pos % condY_all.size(0)))
+                    s = pos % condY_all.size(0)
+                    chunks.append(condY_all[s:s + take])
+                    pos += take;
+                    need -= take
+                cond_slice = torch.cat(chunks, dim=0)
+            cond_slice = cond_slice.to(self.device)  # [to_generate, 607]
+
+            samples.extend(self.sample_batch(
+                batch_id=id,
+                batch_size=to_generate,
+                keep_chain=chains_save,
+                number_chain_steps=self.number_chain_steps,
+                save_final=to_save,
+                num_nodes=None,
+                cond_y_base=cond_slice,  # ★ 중요
+            ))
+
             id += to_generate
             samples_left_to_save -= to_save
             samples_left_to_generate -= to_generate
@@ -385,7 +402,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         kl_e = (self.test_E_kl if test else self.val_E_kl)(prob_true.E, torch.log(prob_pred.E))
         return self.T * (kl_x + kl_e)
 
-    def reconstruction_logp(self, t, X, E, node_mask):
+    def reconstruction_logp(self, t, X, E, y, node_mask):
         # Compute noise values for t = 0.
         t_zeros = torch.zeros_like(t)
         beta_0 = self.noise_schedule(t_zeros)
@@ -398,13 +415,15 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         X0 = F.one_hot(sampled0.X, num_classes=self.Xdim_output).float()
         E0 = F.one_hot(sampled0.E, num_classes=self.Edim_output).float()
-        y0 = sampled0.y
+        y0 = y
+        #y0 = sampled0.y
+
         assert (X.shape == X0.shape) and (E.shape == E0.shape)
 
         sampled_0 = utils.PlaceHolder(X=X0, E=E0, y=y0).mask(node_mask)
 
         # Predictions
-        noisy_data = {'X_t': sampled_0.X, 'E_t': sampled_0.E, 'y_t': sampled_0.y, 'node_mask': node_mask,
+        noisy_data = {'X_t': sampled_0.X, 'E_t': sampled_0.E, 'y_t': y0, 'node_mask': node_mask, # 'y_t': sampled_0.y,
                       't': torch.zeros(X0.shape[0], 1).type_as(y0)}
         extra_data = self.compute_extra_data(noisy_data)
         pred0 = self.forward(noisy_data, extra_data, node_mask)
@@ -471,23 +490,6 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 i, j = divmod(ij, n)
                 print(f"[{tag}] E  first_bad: batch={b} i={i} j={j}  P[b,i,j,:]={P[b, i, j, :].detach().cpu().numpy()}")
 
-        # === /HELPERS ===
-
-        # --- DEBUG: node_mask quick view ---
-        bs, n, dx = X.shape
-        print(
-            f"[apply_noise] X={tuple(X.shape)} E={tuple(E.shape)} y={tuple(y.shape) if torch.is_tensor(y) else type(y)}")
-        print(
-            f"[apply_noise] node_mask.shape={tuple(node_mask.shape)}, dtype={node_mask.dtype}, device={node_mask.device}")
-        true_per_graph = node_mask.sum(-1)  # (bs,)
-        print(f"[apply_noise] true_nodes_per_graph={true_per_graph.tolist()} (max_n={n})")
-
-        # 앞 2개 그래프만 0/1로 미리보기 (너무 길면 잘림)
-        to_show_b = min(2, bs)
-        to_show_n = min(40, n)
-        print("[apply_noise] node_mask preview (first 2 graphs, first 40 nodes):")
-        print(node_mask[:to_show_b, :to_show_n].to(torch.int).cpu().numpy())
-        # -----------------------------------
         """ Sample noise and apply it to the data. """
 
         # Sample a timestep t.
@@ -511,20 +513,6 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # Compute transition probabilities
         probX = X @ Qtb.X  # (bs, n, dx_out)
         probE = E @ Qtb.E.unsqueeze(1)  # (bs, n, n, de_out)
-
-        # 샘플링 직전 상태 점검
-        #_print_prob_nodes("pre-sample", probX, node_mask)
-        #_print_prob_edges("pre-sample", probE, node_mask)
-
-        # (선택) t도 같이 확인하면 특정 t에서만 깨지는지 알 수 있음
-        print("[apply_noise] t_int:", t_int.view(-1).tolist())
-
-        sumX = X.sum(-1)  # (bs, n)
-        bad_real = (sumX == 0) & node_mask
-        print("[X-check] zero one-hot on real nodes:", bad_real.sum().item())
-        if bad_real.any():
-            b, i = torch.nonzero(bad_real, as_tuple=False)[0].tolist()
-            print("X[b,i]=", X[b, i].detach().cpu().numpy())
 
         sampled_t = diffusion_utils.sample_discrete_features(probX=probX, probE=probE, node_mask=node_mask)
 
@@ -568,7 +556,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         # 4. Reconstruction loss
         # Compute L0 term : -log p (X, E, y | z_0) = reconstruction loss
-        prob0 = self.reconstruction_logp(t, X, E, node_mask)
+        prob0 = self.reconstruction_logp(t, X, E, y, node_mask,)
 
         loss_term_0 = self.val_X_logp(X * prob0.X.log()) + self.val_E_logp(E * prob0.E.log())
 
@@ -595,7 +583,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
     @torch.no_grad()
     def sample_batch(self, batch_id: int, batch_size: int, keep_chain: int, number_chain_steps: int,
-                     save_final: int, num_nodes=None):
+                     save_final: int, num_nodes=None, cond_y_base: torch.Tensor | None = None):
         """
         :param batch_id: int
         :param batch_size: int
@@ -617,8 +605,18 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         arange = torch.arange(n_max, device=self.device).unsqueeze(0).expand(batch_size, -1)
         node_mask = arange < n_nodes.unsqueeze(1)
         # Sample noise  -- z has size (n_samples, n_nodes, n_features)
+        #z_T = diffusion_utils.sample_discrete_feature_noise(limit_dist=self.limit_dist, node_mask=node_mask)
+        # X, E, y = z_T.X, z_T.E, z_T.y
         z_T = diffusion_utils.sample_discrete_feature_noise(limit_dist=self.limit_dist, node_mask=node_mask)
-        X, E, y = z_T.X, z_T.E, z_T.y
+        X, E, _y_noise = z_T.X, z_T.E, z_T.y
+        # ▶ 조건 기반 샘플링: 베이스 y(스펙트럼+글로벌=607)를 반드시 세팅
+        if cond_y_base is None:
+            raise ValueError("sample_batch: cond_y_base(607-dim) must be provided for conditional generation.")
+
+        # cond_y_base: [batch_size, 607]이어야 함
+        assert cond_y_base.dim() == 2 and cond_y_base.size(0) == batch_size
+        f"cond_y_base shape {cond_y_base.shape} must be (batch_size, 607)"
+        y = cond_y_base.to(self.device)
 
         assert (E == torch.transpose(E, 1, 2)).all()
         assert number_chain_steps < self.T
@@ -715,6 +713,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # Neural net predictions
         noisy_data = {'X_t': X_t, 'E_t': E_t, 'y_t': y_t, 't': t, 'node_mask': node_mask}
         extra_data = self.compute_extra_data(noisy_data)
+        # pred = self.forward(noisy_data, extra_data, node_mask)
+        # pred = self.forward(noisy_data, extra_data, node_mask, cond_y=y_t)
         pred = self.forward(noisy_data, extra_data, node_mask)
 
         # Normalize predictions
@@ -754,9 +754,11 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         assert (E_s == torch.transpose(E_s, 1, 2)).all()
         assert (X_t.shape == X_s.shape) and (E_t.shape == E_s.shape)
 
-        out_one_hot = utils.PlaceHolder(X=X_s, E=E_s, y=torch.zeros(y_t.shape[0], 0))
-        out_discrete = utils.PlaceHolder(X=X_s, E=E_s, y=torch.zeros(y_t.shape[0], 0))
+        # out_one_hot = utils.PlaceHolder(X=X_s, E=E_s, y=torch.zeros(y_t.shape[0], 0))
+        # out_discrete = utils.PlaceHolder(X=X_s, E=E_s, y=torch.zeros(y_t.shape[0], 0))
 
+        out_one_hot = utils.PlaceHolder(X=X_s, E=E_s, y=y_t)
+        out_discrete = utils.PlaceHolder(X=X_s, E=E_s, y=y_t)
         return out_one_hot.mask(node_mask).type_as(y_t), out_discrete.mask(node_mask, collapse=True).type_as(y_t)
 
     def compute_extra_data(self, noisy_data):

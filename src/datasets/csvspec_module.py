@@ -16,6 +16,7 @@ from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
 from rdkit import Chem
 from rdkit import RDLogger
+from rdkit.Chem import Draw
 
 # RDKit 경고 숨김
 RDLogger.DisableLog('rdApp.*')
@@ -23,7 +24,7 @@ RDLogger.DisableLog('rdApp.*')
 # --------------------------
 # 기본 원자/결합 피처 정의
 # --------------------------
-ALLOWED_ATOMS = ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]  # 필요시 확장
+ALLOWED_ATOMS = ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I", "B"]  # 필요시 확장
 UNK_TOKEN = "<UNK>"
 ATOM_VOCAB = ALLOWED_ATOMS + [UNK_TOKEN]
 ATOM2IDX = {sym: i for i, sym in enumerate(ATOM_VOCAB)}
@@ -124,6 +125,23 @@ def infer_numeric(s: pd.Series) -> bool:
     except Exception:
         return False
 
+def _get_oov_atoms(mol) -> tuple[list[int], list[str]]:
+    unk_idx, unk_syms = [], set()
+    for a in mol.GetAtoms():
+        s = a.GetSymbol()
+        # ATOM2IDX는 ["H","C","N","O","F","P","S","Cl","Br","I","<UNK>"]만 키로 가짐
+        if s not in ATOM2IDX:  # vocab 밖 → UNK 대상
+            unk_idx.append(a.GetIdx())
+            unk_syms.add(s)
+    return unk_idx, sorted(unk_syms)
+
+def _save_unk_viz(mol, out_dir: Path, ridx: int, smiles: str, unk_syms: list[str], unk_idx: list[int]) -> str:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # 파일명은 행번호 중심으로 안전하게
+    fname = f"{ridx:06d}.png"
+    legend = f"UNK={','.join(unk_syms)} | row={ridx}"
+    Draw.MolToFile(mol, str(out_dir / fname), size=(500, 400), highlightAtoms=unk_idx, legend=legend)
+    return fname
 
 class CSVSpecDataset_for_Diffusion(InMemoryDataset):
     """
@@ -150,7 +168,9 @@ class CSVSpecDataset_for_Diffusion(InMemoryDataset):
         boolean_cols: Optional[List[str]] = None,             # 예) ["is_qm"]
         add_h: bool = False,
         forbidden_atoms: Optional[List[str]] = None,
+        unk_vis_dir: Optional[str] = None,
     ):
+        self.unk_vis_dir = str(unk_vis_dir) if unk_vis_dir else None
         self.csv_path = str(csv_path)
         self.stage = stage
         self.smiles_col = smiles_col
@@ -176,7 +196,6 @@ class CSVSpecDataset_for_Diffusion(InMemoryDataset):
         super().__init__(root=root, transform=transform, pre_transform=pre_transform)
         # PyTorch 2.6: weights_only=False 명시
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
-
 
     def _ensure_stats(self) -> None:
         """stats.json이 없으면 stage와 상관없이 즉시 생성한다."""
@@ -221,6 +240,7 @@ class CSVSpecDataset_for_Diffusion(InMemoryDataset):
         stem = f"{Path(self.csv_path).stem}_{self.stage}_addH{int(self.add_h)}.pt"
         return [stem]
 
+
     def process(self) -> None:
         df = pd.read_csv(self.csv_path, low_memory=False)
 
@@ -264,6 +284,7 @@ class CSVSpecDataset_for_Diffusion(InMemoryDataset):
             stats["categorical"][col] = {"vocab": vocab}
 
         data_list: List[Data] = []
+        log_rows = []
         for ridx, row in df.iterrows():
             mol = mol_from_row(row, self.smiles_col, self.inchi_col, add_h=self.add_h)
             if mol is None:
@@ -271,6 +292,22 @@ class CSVSpecDataset_for_Diffusion(InMemoryDataset):
             # 안전상, 여기서도 한 번 더 가드(이상치가 들어오지 않게)
             if self.forbidden_atoms and has_forbidden_atoms(mol, self.forbidden_atoms):
                 continue
+
+            # ★ UNK 후보 검사 및 시각화
+            if self.unk_vis_dir:
+                unk_idx, unk_syms = _get_oov_atoms(mol)
+                if unk_idx:  # vocab 밖 원소가 하나라도 있으면
+                    img_name = _save_unk_viz(
+                        mol, Path(self.unk_vis_dir), ridx,
+                        row.get(self.smiles_col, "") if self.smiles_col else "",
+                        unk_syms, unk_idx
+                    )
+                    log_rows.append({
+                        "row_index": ridx,
+                        "smiles": row.get(self.smiles_col, "") if self.smiles_col else "",
+                        "unk_symbols": ",".join(unk_syms),
+                        "image": img_name
+                    })
 
             g = build_graph(mol)
 
@@ -428,6 +465,7 @@ class CSVSpecDataModule(AbstractDataModule):
         batch_size: int = 128,
         num_workers: int = 4,
         forbidden_atoms: Optional[List[str]] = None,
+        unk_vis_dir=True
     ):
         self.cfg = cfg
         self.batch_size = batch_size
@@ -445,6 +483,7 @@ class CSVSpecDataModule(AbstractDataModule):
             add_h=add_h,
             transform=to_digress_edge5,  # ★ 핵심: 여기서 5채널로 변환
             forbidden_atoms=forbidden_atoms,
+            unk_vis_dir=unk_vis_dir
         )
 
         # 빈 문자열/None → 비활성화 또는 재사용 선택
@@ -587,7 +626,7 @@ class CSVSpecInfos(AbstractDatasetInfos):
             base_valencies = base_valencies + [0] * (datamodule.dx - len(base_valencies))  # UNK=0
         self.valencies = base_valencies[:datamodule.dx]
 
-        base_weights = { 0: 1, 1: 12, 2: 14, 3: 16, 4: 19, 5: 31, 6: 32, 7: 35, 8: 80, 9: 127 }
+        base_weights = { 0: 1, 1: 12, 2: 14, 3: 16, 4: 19, 5: 31, 6: 32, 7: 35, 8: 80, 9: 127, 10: 11 }
         self.atom_weights = {i: float(base_weights.get(i, 0.0)) for i in range(datamodule.dx)}
 
         self.max_weight = 600  # 데이터에 맞게 넉넉히
@@ -660,3 +699,147 @@ class CSVSpecInfos(AbstractDatasetInfos):
 
     # 필요시 추가: compute_input_output_dims는 main에서 호출됩니다
     # main.py는 extra_features/domain_features와 함께 입출력 차원을 계산해요【turn23file7†main.py†L13-L19】.
+
+
+# ============================
+# Standalone runner (PyCharm)
+# ============================
+def _parse_forbidden_atoms(text):
+    if not text:
+        return None
+    return [t.strip() for t in text.split(",") if t.strip()]
+
+def main():
+    """
+    PyCharm에서 바로 실행 가능한 UNK 시각화용 main()
+    - CONFIG만 수정하고 실행하세요.
+    - 각 split별 폴더에 UNK로 매핑된 분자 이미지를 저장하고, unk_molecules.csv 로그를 남깁니다.
+    """
+    # -----------------------
+    # CONFIG (여기만 수정)
+    # -----------------------
+    MODE = "single"  # "single" | "multi"
+    CSV  = "/root/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
+    SPLIT = "train"  # "train" | "val" | "test"
+
+    TRAIN_CSV = "/root/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
+    VAL_CSV   = None
+    TEST_CSV  = None
+
+    SMILES_COL = "SMILES"
+    INCHI_COL  = "InChI"   # 없으면 None
+    ADD_H = False          # 암시적 H를 명시화(AddHs) 후 처리할지
+    FORBIDDEN_ATOMS = ["As"]  # 금지(드롭)할 원소 리스트. []면 금지 없음
+    CSV_ENCODING = None    # None이면 자동 시도
+    UNK_VIS_DIR = "viz_unk_demo"  # 출력 루트 (split 하위 폴더 생성)
+    IMG_SIZE = (500, 400)
+    # -----------------------
+
+    # 지연 import (모듈 내 정의를 그대로 사용)
+    import os
+    from pathlib import Path
+    import pandas as pd
+    from rdkit.Chem import Draw
+
+    # 모듈 전역 정의 사용 (이미 파일에 존재)
+    # - ATOM2IDX, FORBIDDEN_ATOMS_DEFAULT, has_forbidden_atoms, mol_from_row
+    global ATOM2IDX, FORBIDDEN_ATOMS_DEFAULT
+    global has_forbidden_atoms, mol_from_row
+
+    # 금지 집합 구성
+    forbidden = set(FORBIDDEN_ATOMS) if FORBIDDEN_ATOMS is not None else set(FORBIDDEN_ATOMS_DEFAULT)
+
+    # 입력 목록 구성
+    triples = []
+    if MODE.lower() == "single":
+        if not CSV:
+            raise SystemExit("[CONFIG] MODE='single'에서는 CSV 경로가 필요합니다.")
+        triples.append((SPLIT.lower(), CSV))
+    else:
+        if TRAIN_CSV: triples.append(("train", TRAIN_CSV))
+        if VAL_CSV:   triples.append(("val",   VAL_CSV))
+        if TEST_CSV:  triples.append(("test",  TEST_CSV))
+        if not triples:
+            raise SystemExit("[CONFIG] MODE='multi'에서는 TRAIN_CSV/VAL_CSV/TEST_CSV 중 하나 이상 지정하세요.")
+
+    out_root = Path(UNK_VIS_DIR)
+    print("[INFO] 실행 설정")
+    for sp, path in triples:
+        print(f"  - {sp}: {path}")
+    print(f"  - smiles_col={SMILES_COL}, inchi_col={INCHI_COL}, add_h={ADD_H}")
+    print(f"  - forbidden_atoms={sorted(list(forbidden)) if forbidden else []}")
+    print(f"  - out_dir={out_root.resolve()}")
+
+    total_rows = 0
+    total_parsed = 0
+    total_forbidden_dropped = 0
+    total_unk = 0
+
+    for sp, csv_path in triples:
+        if not (isinstance(csv_path, str) and os.path.exists(csv_path)):
+            raise FileNotFoundError(f"[{sp}] CSV not found: {csv_path}")
+
+        out_dir = out_root / sp
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # CSV 로드
+        try:
+            df = pd.read_csv(csv_path, encoding=CSV_ENCODING)
+        except UnicodeDecodeError:
+            df = pd.read_csv(csv_path, encoding="utf-8", errors="ignore")
+
+        log_rows = []
+        rows = len(df)
+        parsed = 0
+        forbidden_dropped = 0
+        unk_count = 0
+
+        for ridx, row in df.iterrows():
+            total_rows += 1
+
+            mol = mol_from_row(row, SMILES_COL, INCHI_COL, add_h=ADD_H)  # SMILES 우선, 실패 시 InChI; AddHs 옵션 지원 :contentReference[oaicite:3]{index=3}
+            if mol is None:
+                continue
+            parsed += 1
+            total_parsed += 1
+
+            # 금지 원소 드롭
+            if forbidden and has_forbidden_atoms(mol, forbidden):  # 금지 원소 판정 로직은 모듈 내 정의 사용 :contentReference[oaicite:4]{index=4}
+                forbidden_dropped += 1
+                total_forbidden_dropped += 1
+                continue
+
+            # UNK 후보 탐지: ATOM_VOCAB(ATOM2IDX)에 없는 심볼
+            unk_idx = []
+            unk_syms = set()
+            for a in mol.GetAtoms():
+                s = a.GetSymbol()
+                if s not in ATOM2IDX:  # vocab 밖 → UNK 매핑 대상 (ATOM2IDX/UNK 정의는 모듈 상단에 존재) :contentReference[oaicite:5]{index=5}
+                    unk_idx.append(a.GetIdx())
+                    unk_syms.add(s)
+
+            if unk_idx:
+                unk_count += 1
+                total_unk += 1
+                # PNG 저장
+                fname = f"{ridx:06d}.png"
+                legend = f"UNK={','.join(sorted(unk_syms))} | row={ridx}"
+                Draw.MolToFile(mol, str(out_dir / fname), size=IMG_SIZE, highlightAtoms=unk_idx, legend=legend)
+                # 로그 적재
+                log_rows.append({
+                    "row_index": ridx,
+                    "smiles": row.get(SMILES_COL, "") if SMILES_COL else "",
+                    "inchi": row.get(INCHI_COL, "") if INCHI_COL else "",
+                    "unk_symbols": ",".join(sorted(unk_syms)),
+                    "image": fname,
+                })
+
+        # split별 요약 및 로그 저장
+        if log_rows:
+            pd.DataFrame(log_rows).to_csv(out_dir / "unk_molecules.csv", index=False)
+        print(f"[OK] {sp}: rows={rows}, parsed={parsed}, forbidden_dropped={forbidden_dropped}, unk_mols={unk_count} → {out_dir}")
+
+    print(f"\n[DONE] total_rows={total_rows}, total_parsed={total_parsed}, total_forbidden_dropped={total_forbidden_dropped}, total_unk_mols={total_unk}")
+
+if __name__ == "__main__":
+    main()

@@ -285,17 +285,17 @@ def sample_discrete_features(probX, probE, node_mask):
     probE.masked_fill_(diag_mask.unsqueeze(-1), fill_val)
 
     # --- 샘플링 ---
-    flatX = probX.reshape(-1, probX.size(-1))
-    print("[flatX] min_row_sum:",
-          flatX.sum(-1).min().item(),
-          "any_neg:", (flatX < 0).any().item(),
-          "any_nan:", (~torch.isfinite(flatX)).any().item())
+    #flatX = probX.reshape(-1, probX.size(-1))
+    #print("[flatX] min_row_sum:",
+    #      flatX.sum(-1).min().item(),
+    #      "any_neg:", (flatX < 0).any().item(),
+    #      "any_nan:", (~torch.isfinite(flatX)).any().item())
 
     flat = probX.reshape(-1, probX.size(-1))
     row_sum = flat.sum(-1)
     m = node_mask.reshape(-1)
-    print("[probX.unmasked] zero_rows:", (row_sum[m] <= 0).sum().item())
-    print("[probX.masked]   zero_rows:", (row_sum[~m] <= 0).sum().item())
+    # print("[probX.unmasked] zero_rows:", (row_sum[m] <= 0).sum().item())
+    # print("[probX.masked]   zero_rows:", (row_sum[~m] <= 0).sum().item())
 
     X_t = probX.reshape(bs * n, -1).multinomial(1).reshape(bs, n)
 
@@ -317,7 +317,7 @@ def compute_posterior_distribution(M, M_t, Qt_M, Qsb_M, Qtb_M, mask_N=None, kind
     ''' M: X or E
         Compute xt @ Qt.T * x0 @ Qsb / x0 @ Qtb @ xt.T
     '''
-    print("compute_posterior_distribution")
+    # print("compute_posterior_distribution")
     # Flatten feature tensors
     M = M.flatten(start_dim=1, end_dim=-2).to(torch.float32)        # (bs, N, d) with N = n or n * n
     M_t = M_t.flatten(start_dim=1, end_dim=-2).to(torch.float32)    # same
@@ -405,7 +405,7 @@ def mask_distributions(true_X, true_E, pred_X, pred_E, node_mask):
 
 
 def posterior_distributions(X, E, y, X_t, E_t, y_t, Qt, Qsb, Qtb):
-    prob_X = compute_posterior_distribution(M=X, M_t=X_t, Qt_M=Qt.X, Qsb_M=Qsb.X, Qtb_M=Qtb.X, mask_N=node_mask, kind="X", debug=True)   # (bs, n, dx)
+    prob_X = compute_posterior_distribution(M=X, M_t=X_t, Qt_M=Qt.X, Qsb_M=Qsb.X, Qtb_M=Qtb.X,)   # (bs, n, dx)
     prob_E = compute_posterior_distribution(M=E, M_t=E_t, Qt_M=Qt.E, Qsb_M=Qsb.E, Qtb_M=Qtb.E)   # (bs, n * n, de)
 
     return PlaceHolder(X=prob_X, E=prob_E, y=y_t)
