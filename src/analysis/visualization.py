@@ -10,7 +10,8 @@ import numpy as np
 import rdkit.Chem
 import wandb
 import matplotlib.pyplot as plt
-
+from rdkit.Chem.Draw import rdMolDraw2D
+from rdkit.Chem import Draw
 
 
 
@@ -87,12 +88,27 @@ class MolecularVisualization:
             except rdkit.Chem.KekulizeException:
                 print("Can't kekulize molecule")
 
+    def _safe_draw(mol, file_name, legend):
+        try:
+            # 케쿨화 강제 안 함: invalid aromatic/고리 구조에서도 최대한 그려줌
+            dmol = rdMolDraw2D.PrepareMolForDrawing(mol, kekulize=False)
+        except Exception:
+            dmol = mol
+        try:
+            Draw.MolToFile(dmol, file_name, size=(300, 300), legend=legend)
+            return True
+        except Exception as e:
+            print(f"[viz] skip frame (draw failed): {e}")
+            return False
 
     def visualize_chain(self, path, nodes_list, adjacency_matrix, trainer=None):
         RDLogger.DisableLog('rdApp.*')
         # convert graphs to the rdkit molecules
         mols = [self.mol_from_graphs(nodes_list[i], adjacency_matrix[i]) for i in range(nodes_list.shape[0])]
-
+        mols = [m for m in mols if m is not None and m.GetNumAtoms() > 0]  # ← 유효한 프레임만 남김
+        if not mols:
+            print("[viz] no valid molecules to draw; skip chain")
+            return []
         # find the coordinates of atoms in the final molecule
         final_molecule = mols[-1]
         AllChem.Compute2DCoords(final_molecule)
