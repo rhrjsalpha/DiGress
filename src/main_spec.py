@@ -28,6 +28,7 @@ from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.utilities.warnings import PossibleUserWarning
+from pytorch_lightning.loggers import CSVLogger
 
 # 프로젝트 모듈 (기존 main과 동일한 경로 규칙)
 from src import utils
@@ -85,6 +86,7 @@ def build_trainer(cfg, callbacks, name: str):
           f"GLOO_DEVICE_TRANSPORT={os.environ.get('GLOO_DEVICE_TRANSPORT')} "
           f"GLOO_SOCKET_IFNAME={os.environ.get('GLOO_SOCKET_IFNAME')}")
 
+    csv_logger = CSVLogger(save_dir=os.getcwd(), name="pl_logs")
     trainer = Trainer(
         accelerator='gpu' if use_gpu else 'cpu',
         devices=devices,
@@ -97,7 +99,7 @@ def build_trainer(cfg, callbacks, name: str):
         enable_progress_bar=False,
         callbacks=callbacks,
         log_every_n_steps=50 if name != 'debug' else 1,
-        logger=[],
+        logger=[csv_logger],
     )
     return trainer
 

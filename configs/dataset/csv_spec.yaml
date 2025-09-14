@@ -2,9 +2,9 @@
 name: csvspec
 
 # CSV 경로 (필수)
-train_csv: "/root/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
+train_csv: "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
 val_csv:   "" # D:/data/val.csv
-test_csv:  "/root/PycharmProjects/DiGress/data/csv/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"
+test_csv:  "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"
 
 # 컬럼/스펙트럼 범위 (당신의 CSV에 맞게)
 smiles_col: SMILES         # SMILES가 없고 InChI만 있으면 null로 두세요
@@ -19,5 +19,5 @@ global_cols: ["solvent_phase","pH_label","dielectric_constant_avg","is_qm"]
 spectrum_fill_eps: 1.0e-8
 fixed_vocabs: {}          # 필요시 {열이름: [v1,v2,...]} 로 명시 가능
 boolean_cols: []          # 0/1로 수동 처리할 컬럼명 리스트
-remove_h: false           # RDKit에서 H 제거 여부
+remove_h: true           # RDKit에서 H 제거 여부
 add_h: false              # H 추가하여 그래프화할지 여부

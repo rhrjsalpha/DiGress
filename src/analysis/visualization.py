@@ -128,12 +128,16 @@ class MolecularVisualization:
 
         # draw gif
         save_paths = []
-        num_frams = nodes_list.shape[0]
+        # num_frams = nodes_list.shape[0]
 
-        for frame in range(num_frams):
-            file_name = os.path.join(path, 'fram_{}.png'.format(frame))
-            Draw.MolToFile(mols[frame], file_name, size=(300, 300), legend=f"Frame {frame}")
-            save_paths.append(file_name)
+        for frame, m in enumerate(mols):  # 유효 프레임만 사용
+            file_name = os.path.join(path, f'fram_{frame}.png')
+            if self._draw_mol_safe(m, file_name, legend=f"Frame {frame}"):
+                save_paths.append(file_name)
+
+        if not save_paths:
+            print("[viz] no drawable frames; skip gif")
+            return mols
 
         imgs = [imageio.imread(fn) for fn in save_paths]
         gif_path = os.path.join(os.path.dirname(path), '{}.gif'.format(path.split('/')[-1]))
@@ -145,12 +149,102 @@ class MolecularVisualization:
             wandb.log({"chain": wandb.Video(gif_path, fps=5, format="gif")}, commit=True)
 
         # draw grid image
+        # --- draw grid image (safe) ---
         try:
-            img = Draw.MolsToGridImage(mols, molsPerRow=10, subImgSize=(200, 200))
-            img.save(os.path.join(path, '{}_grid_image.png'.format(path.split('/')[-1])))
-        except Chem.rdchem.KekulizeException:
-            print("Can't kekulize molecule")
-        return mols
+            # RDKit의 그리드 함수가 케쿨화/SMILES 경로를 타며 터질 수 있으므로
+            # 먼저 kekulize=False로 준비된 mol 리스트를 만들어 시도
+            safe_mols = []
+            for m in mols:
+                try:
+                    dm = rdMolDraw2D.PrepareMolForDrawing(m, kekulize=False)
+                except Exception:
+                    dm = m
+                safe_mols.append(dm)
+
+            img = Draw.MolsToGridImage(safe_mols, molsPerRow=10, subImgSize=(200, 200))
+            out_grid = os.path.join(path, f"{path.split('/')[-1]}_grid_image.png")
+            img.save(out_grid)
+        except Exception as e:
+            # 여전히 실패하면 그리드 이미지는 건너뜁니다(체인 GIF/패널은 계속 진행)
+            print(f"[viz] grid draw failed: {e} -- skip grid")
+
+    def _draw_mol_safe(self, mol, file_name, legend=None):
+        """케쿨화/SMILES 의존을 피해서 실패 없이 그리기"""
+        try:
+            dmol = rdMolDraw2D.PrepareMolForDrawing(mol, kekulize=False)
+        except Exception:
+            dmol = mol
+        try:
+            drawer = rdMolDraw2D.MolDraw2DCairo(300, 300)
+            drawer.DrawMolecule(dmol, legend=legend or "")
+            drawer.FinishDrawing()
+            with open(file_name, "wb") as f:
+                f.write(drawer.GetDrawingText())
+            return True
+        except Exception as e:
+            print(f"[viz] skip frame (draw failed): {e}")
+            return False
+
+    def visualize_panel(self, path: str, gen_atom_edge_pair, cond_y: np.ndarray,
+                            spec_len: int | None = None, ref_mol: Chem.Mol | None = None,
+                            file_name: str = "panel.png", title: str | None = None, log='graph'):
+        """
+        gen_atom_edge_pair: tuple (atom_types_tensor, edge_types_tensor) like items of molecule_list
+        cond_y: numpy array of condition vector used for generation (spectrum + globals)
+        spec_len: length of spectrum part in cond_y. If None, try to infer (use full y)
+        ref_mol: RDKit Mol of the reference/original molecule (optional)
+        """
+
+        os.makedirs(path, exist_ok=True)
+
+        # 1) 분자 그림(PIL Image) 준비
+        gen_mol = self.mol_from_graphs(gen_atom_edge_pair[0].numpy(), gen_atom_edge_pair[1].numpy())
+        gen_img = Draw.MolToImage(gen_mol, size=(350, 350)) if gen_mol is not None else None
+        ref_img = Draw.MolToImage(ref_mol, size=(350, 350)) if ref_mol is not None else None
+
+        # 2) 스펙트럼/조건 분리
+        y = np.asarray(cond_y).reshape(-1)
+        if spec_len is None or spec_len <= 0 or spec_len > y.shape[0]:
+            spec_len = y.shape[0]  # 안전빵: 전체를 스펙처럼 보여줌
+        y_spec = y[:spec_len]
+        y_rest = y[spec_len:]  # 글로벌 조건 숫자들(있다면)
+
+        # 3) 패널 구성
+        fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+        ax0, ax1, ax2 = axes
+
+        # (왼쪽) 스펙트럼 + 글로벌 조건 요약
+        ax0.plot(np.arange(len(y_spec)), y_spec)
+        ax0.set_title("Spectrum")
+        ax0.set_xlabel("bin")
+        ax0.set_ylabel("intensity")
+        if y_rest.size > 0:
+            txt = "\n".join([f"g[{i}]={v:.3g}" for i, v in enumerate(y_rest[:12])])  # 최대 12개만
+            ax0.text(0.02, 0.98, txt, transform=ax0.transAxes, va="top", ha="left")
+
+        # (가운데) 원본
+        ax1.axis('off')
+        ax1.set_title("Original")
+        if ref_img is not None:
+            ax1.imshow(ref_img)
+
+        # (오른쪽) 생성 결과
+        ax2.axis('off')
+        ax2.set_title("Generated")
+        if gen_img is not None:
+            ax2.imshow(gen_img)
+
+        if title:
+            fig.suptitle(title, y=1.02)
+
+        fig.tight_layout()
+        out_path = os.path.join(path, file_name)
+        fig.savefig(out_path, dpi=200)
+        plt.close(fig)
+
+        # wandb 로깅(선택)
+        if wandb.run and log is not None:
+            wandb.log({log: wandb.Image(out_path)}, commit=True)
 
 
 class NonMolecularVisualization:
@@ -235,3 +329,8 @@ class NonMolecularVisualization:
         imageio.mimsave(gif_path, imgs, subrectangles=True, duration=20)
         if wandb.run:
             wandb.log({'chain': [wandb.Video(gif_path, caption=gif_path, format="gif")]})
+
+        # --- Add to src/analysis/visualization.py (inside MolecularVisualization) ---
+
+
+

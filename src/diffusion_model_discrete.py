@@ -13,7 +13,7 @@ from src.diffusion import diffusion_utils
 from metrics.train_metrics import TrainLossDiscrete
 from metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL
 from src import utils
-
+from rdkit import Chem
 
 class DiscreteDenoisingDiffusion(pl.LightningModule):
     def __init__(self, cfg, dataset_infos, train_metrics, sampling_metrics, visualization_tools, extra_features,
@@ -142,8 +142,18 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                       f" -- E_CE: {to_log['train_epoch/E_CE'] :.3f} --"
                       f" y_CE: {to_log['train_epoch/y_CE'] :.3f}"
                       f" -- {time.time() - self.start_epoch_time:.1f}s ")
+        self.log("train/x_CE", to_log['train_epoch/x_CE'], on_step=False, on_epoch=True)
+        self.log("train/E_CE", to_log['train_epoch/E_CE'], on_step=False, on_epoch=True)
+        self.log("train/y_CE", to_log['train_epoch/y_CE'], on_step=False, on_epoch=True)
+
         epoch_at_metrics, epoch_bond_metrics = self.train_metrics.log_epoch_metrics()
         self.print(f"Epoch {self.current_epoch}: {epoch_at_metrics} -- {epoch_bond_metrics}")
+
+        for k, v in epoch_at_metrics.items():
+            self.log(f"train/atom/{k}", v, on_step=False, on_epoch=True)
+        for k, v in epoch_bond_metrics.items():
+            self.log(f"train/bond/{k}", v, on_step=False, on_epoch=True)
+
         if torch.cuda.is_available():
             print(torch.cuda.memory_summary())
         else:
@@ -201,7 +211,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 bs = 2 * self.cfg.train.batch_size
                 to_generate = min(samples_left_to_generate, bs)
                 to_save = min(samples_left_to_save, bs)
-                chains_save = min(chains_left_to_save, bs)
+                # chains_save = min(chains_left_to_save, bs)
+                chains_save = min(chains_left_to_save, to_generate)
                 samples.extend(self.sample_batch(batch_id=ident, batch_size=to_generate, num_nodes=None,
                                                  save_final=to_save,
                                                  keep_chain=chains_save,
@@ -236,6 +247,21 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         pred = self.forward(noisy_data, extra_data, node_mask)
         nll = self.compute_val_loss(pred, noisy_data, dense_data.X, dense_data.E, data.y, node_mask, test=True)
 
+        # --- keep original SMILES for panel (once per sample order) ---
+        if not hasattr(self, "_test_smiles"):
+            self._test_smiles = []
+        print("self._test_smiles",self._test_smiles)
+
+        smi = getattr(data, "smiles", None)
+        if smi is not None:
+            # PyG Batch면 list/tuple일 가능성이 높음
+            if isinstance(smi, (list, tuple)):
+                self._test_smiles.extend(list(smi))
+            else:
+                # 혹시 단일 문자열이면 배치 크기만큼 반복
+                n = getattr(data, "num_graphs", 1)
+                self._test_smiles += [smi] * int(n)
+
         # ▶ cond_y(607) 수집
         # data.y: [B, 607] (스펙트럼+글로벌)
         self._test_condY.append(data.y.detach().cpu())
@@ -264,6 +290,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         if len(self._test_condY) == 0:
             raise RuntimeError("No test cond_y collected. Ensure test_step appends to self._test_condY.")
+
+        print("self._test_condY",self._test_condY)
         condY_all = torch.cat(self._test_condY, dim=0)  # [N_test, 607]
 
         samples_left_to_generate = self.cfg.general.final_model_samples_to_generate
@@ -278,7 +306,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             bs = 2 * self.cfg.train.batch_size
             to_generate = min(samples_left_to_generate, bs)
             to_save = min(samples_left_to_save, bs)
-            chains_save = min(chains_left_to_save, bs)
+            # chains_save = min(chains_left_to_save, bs)
+            chains_save = min(chains_left_to_save, to_generate)
 
             # ▶ cond_y_base slice 준비 (필요 시 순환)
             if id + to_generate <= condY_all.size(0):
@@ -671,28 +700,81 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             edge_types = E[i, :n, :n].cpu()
             molecule_list.append([atom_types, edge_types])
 
-        # Visualize chains
+        # ===== 시각화 =====
         if self.visualization_tools is not None:
-            self.print('Visualizing chains...')
             current_path = os.getcwd()
-            num_molecules = chain_X.size(1)       # number of molecules
+
+            # ---------- (A) 체인 GIF ----------
+            self.print('Visualizing chains...')
+            # chain_X: [T, keep_chain, maxN] , chain_E: [T, keep_chain, maxN, maxN]
+            num_molecules = int(chain_X.size(1))         # keep_chain과 동일해야 함
             for i in range(num_molecules):
-                result_path = os.path.join(current_path, f'chains/{self.cfg.general.name}/'
-                                                         f'epoch{self.current_epoch}/'
-                                                         f'chains/molecule_{batch_id + i}')
-                if not os.path.exists(result_path):
-                    os.makedirs(result_path)
-                    _ = self.visualization_tools.visualize_chain(result_path,
-                                                                 chain_X[:, i, :].numpy(),
-                                                                 chain_E[:, i, :].numpy())
-                self.print('\r{}/{} complete'.format(i+1, num_molecules), end='', flush=True)
+                result_path = os.path.join(
+                    current_path,
+                    f'chains/{self.cfg.general.name}/epoch{self.current_epoch}/chains/molecule_{batch_id + i}'
+                )
+                os.makedirs(result_path, exist_ok=True)
+                # numpy로 변환할 때 CPU에 확실히 올려두기
+                _ = self.visualization_tools.visualize_chain(
+                    result_path,
+                    chain_X[:, i, :].detach().cpu().numpy(),
+                    chain_E[:, i, :].detach().cpu().numpy()
+                )
+                self.print(f'\r{i+1}/{num_molecules} complete', end='', flush=True)
             self.print('\nVisualizing molecules...')
 
-            # Visualize the final molecules
-            current_path = os.getcwd()
-            result_path = os.path.join(current_path,
-                                       f'graphs/{self.name}/epoch{self.current_epoch}_b{batch_id}/')
-            self.visualization_tools.visualize(result_path, molecule_list, save_final)
+            # ---------- (B) 최종 분자 PNG (기존) ----------
+            result_path = os.path.join(
+                current_path, f'graphs/{self.cfg.general.name}/epoch{self.current_epoch}_b{batch_id}'
+            )
+            os.makedirs(result_path, exist_ok=True)
+
+            # save_final이 batch_size보다 클 수 있으므로 방어
+            save_n = min(save_final, len(molecule_list))
+            self.visualization_tools.visualize(result_path, molecule_list, save_n)
+
+            # ---------- (C) 조건 패널 PNG (새로 추가) ----------
+            # spec_len 추정: cfg에 있으면 사용, 없으면 None -> visualize_panel이 전체 y를 스펙처럼 그림
+            spec_len = None
+            try:
+                s = int(getattr(self.cfg.dataset, "spectrum_start", 0))
+                e = int(getattr(self.cfg.dataset, "spectrum_end", 0))
+                if e > s:
+                    spec_len = (e - s) + 1
+            except Exception:
+                pass
+
+            # cond_y_base 각 샘플의 조건 벡터를 함께 패널로 저장
+            for i in range(save_n):
+                # 샘플 생성에 실제 사용된 조건 값
+                y_i = cond_y_base[i].detach().cpu().numpy()
+
+                print(self._test_smiles)
+                ref_mol = None
+                if hasattr(self, "_test_smiles") and len(self._test_smiles) > 0:
+                    # test 셋보다 더 많이 생성하는 경우에도 안전하게 인덱싱
+                    idx = (batch_id + i) % len(self._test_smiles)
+                    s = self._test_smiles[idx]
+                    if isinstance(s, str) and s:
+                        try:
+                            ref_mol = Chem.MolFromSmiles(s)
+                            rm_h = getattr(self.visualization_tools, "remove_h", False)  # ← 시각화 객체에서 플래그 읽기
+                            if ref_mol is not None and rm_h:
+                                ref_mol = Chem.RemoveHs(ref_mol)
+                        except Exception:
+                            ref_mol = None
+
+                self.visualization_tools.visualize_panel(
+                    path=result_path,
+                    gen_atom_edge_pair=molecule_list[i],
+                    cond_y=y_i,
+                    spec_len=spec_len,             # None이면 전체 y를 스펙처럼 그림
+                    ref_mol=ref_mol,
+                    file_name=f"panel_{i}.png",
+                    title=f"epoch{self.current_epoch} | b{batch_id} | idx{i}",
+                    log='panel'
+                )
+
             self.print("Done.")
 
         return molecule_list

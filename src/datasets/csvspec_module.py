@@ -25,9 +25,15 @@ RDLogger.DisableLog('rdApp.*')
 # 기본 원자/결합 피처 정의
 # --------------------------
 ALLOWED_ATOMS = ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I", "B"]  # 필요시 확장
-UNK_TOKEN = "<UNK>"
-ATOM_VOCAB = ALLOWED_ATOMS + [UNK_TOKEN]
+
+### atom 정의 되지 않은 것으로 오류 날시 UNK 사용해 보기 ###
+# UNK_TOKEN = "<UNK>"
+# ATOM_VOCAB = ALLOWED_ATOMS + [UNK_TOKEN]
+# ATOM2IDX = {sym: i for i, sym in enumerate(ATOM_VOCAB)}
+
+ATOM_VOCAB = ALLOWED_ATOMS[:]  # UNK 제거
 ATOM2IDX = {sym: i for i, sym in enumerate(ATOM_VOCAB)}
+
 BOND_TYPES = {
     Chem.rdchem.BondType.SINGLE: 0,
     Chem.rdchem.BondType.DOUBLE: 1,
@@ -62,7 +68,13 @@ def one_hot(x, choices):
 
 def atom_feature(atom: Chem.Atom) -> torch.Tensor:
     sym = atom.GetSymbol()
-    idx = ATOM2IDX.get(sym, ATOM2IDX[UNK_TOKEN])  # vocab 밖이면 UNK로
+    try:
+        idx = ATOM2IDX.get(sym, ATOM2IDX[UNK_TOKEN])  # vocab 밖이면 UNK로
+    except KeyError:
+        if sym not in ATOM2IDX:
+            raise KeyError(f"OOV atom symbol: {sym}")
+        idx = ATOM2IDX[sym]
+
     v = torch.zeros(len(ATOM_VOCAB), dtype=torch.float32)
     v[idx] = 1.0
     return v
