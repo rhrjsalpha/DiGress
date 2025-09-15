@@ -13,9 +13,6 @@ import matplotlib.pyplot as plt
 from rdkit.Chem.Draw import rdMolDraw2D
 from rdkit.Chem import Draw
 
-
-
-
 class MolecularVisualization:
     def __init__(self, remove_h, dataset_infos):
         self.remove_h = remove_h

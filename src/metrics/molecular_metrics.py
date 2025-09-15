@@ -1,6 +1,7 @@
 from rdkit import Chem
 from torchmetrics import MeanSquaredError, MeanAbsoluteError
-
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
+import os, csv
 ### packages for visualization
 from src.analysis.rdkit_functions import compute_molecular_metrics
 import torch
@@ -9,6 +10,34 @@ from torch import Tensor
 import wandb
 import torch.nn as nn
 
+
+@rank_zero_only
+def _append_rdkit_csv(epoch, val_counter, rdkit_metrics,):
+    """
+    rdkit_metrics = (
+        [validity, relaxed_validity, uniqueness, novelty],
+        unique_smiles_list,
+        {'nc_min','nc_mu','nc_max'},
+        all_smiles_list
+    )
+    """
+    vals = rdkit_metrics[0]
+    row = {
+        "epoch":        int(epoch),
+        "val_counter":  int(val_counter),
+        "validity":     float(vals[0]),
+        "relaxed_validity": float(vals[1]),
+        "uniqueness":   float(vals[2]),
+        "novelty":      float(vals[3]),
+    }
+
+    os.makedirs("pl_logs", exist_ok=True)
+    out_csv = os.path.join("pl_logs", "rdkit_sampling_metrics.csv")
+    write_header = not os.path.exists(out_csv)
+    with open(out_csv, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if write_header: w.writeheader()
+        w.writerow(row)
 
 class TrainMolecularMetrics(nn.Module):
     def __init__(self, remove_h):
@@ -155,6 +184,8 @@ class SamplingMolecularMetrics(nn.Module):
             textfile.writelines(valid_unique_molecules)
             textfile.close()
             print("Stability metrics:", stability, "--", rdkit_metrics[0])
+
+        _append_rdkit_csv(current_epoch, val_counter, rdkit_metrics)
 
     def reset(self):
         for metric in [self.n_dist_mae, self.node_dist_mae, self.edge_dist_mae, self.valency_dist_mae]:

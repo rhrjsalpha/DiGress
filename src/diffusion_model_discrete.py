@@ -228,6 +228,24 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             self.print(f'Done. Sampling took {time.time() - start:.2f} seconds\n')
             print("Validation epoch end ends...")
 
+        if getattr(self.trainer, "is_global_zero", True):
+            ckdir = os.path.join("checkpoints", self.name, "milestones")
+            os.makedirs(ckdir, exist_ok=True)
+            tag = f"e{self.current_epoch:04d}_v{self.val_counter:04d}"
+
+            # (A) Lightning checkpoint: 학습 재개/평가용(전체 상태)
+            self.trainer.save_checkpoint(os.path.join(ckdir, f"{tag}.ckpt"))
+
+            # (B) 순수 모델 가중치만: 추론/전이학습에 가벼움
+            torch.save(
+                {
+                    "model": self.model.state_dict(),
+                    "epoch": int(self.current_epoch),
+                    "val_counter": int(self.val_counter),
+                },
+                os.path.join(ckdir, f"{tag}.pt"),
+            )
+
     def on_test_epoch_start(self) -> None:
         self.print("Starting test...")
         self.test_nll.reset()
@@ -291,7 +309,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         if len(self._test_condY) == 0:
             raise RuntimeError("No test cond_y collected. Ensure test_step appends to self._test_condY.")
 
-        print("self._test_condY",self._test_condY)
+        # print("self._test_condY",self._test_condY)
         condY_all = torch.cat(self._test_condY, dim=0)  # [N_test, 607]
 
         samples_left_to_generate = self.cfg.general.final_model_samples_to_generate

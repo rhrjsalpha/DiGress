@@ -27,6 +27,7 @@ RDLogger.DisableLog('rdApp.*')
 ALLOWED_ATOMS = ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I", "B"]  # 필요시 확장
 
 ### atom 정의 되지 않은 것으로 오류 날시 UNK 사용해 보기 ###
+UNK_TOKEN = None
 # UNK_TOKEN = "<UNK>"
 # ATOM_VOCAB = ALLOWED_ATOMS + [UNK_TOKEN]
 # ATOM2IDX = {sym: i for i, sym in enumerate(ATOM_VOCAB)}
@@ -69,8 +70,11 @@ def one_hot(x, choices):
 def atom_feature(atom: Chem.Atom) -> torch.Tensor:
     sym = atom.GetSymbol()
     try:
-        idx = ATOM2IDX.get(sym, ATOM2IDX[UNK_TOKEN])  # vocab 밖이면 UNK로
-    except KeyError:
+        if not UNK_TOKEN == None:
+            idx = ATOM2IDX.get(sym, ATOM2IDX[UNK_TOKEN])  # vocab 밖이면 UNK로
+        else:
+            idx = ATOM2IDX[sym]
+    except KeyError or NameError:
         if sym not in ATOM2IDX:
             raise KeyError(f"OOV atom symbol: {sym}")
         idx = ATOM2IDX[sym]

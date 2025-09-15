@@ -211,8 +211,28 @@ def main(cfg: DictConfig):
     train_metrics = (TrainMolecularMetricsDiscrete(infos)
                      if cfg.model.type == 'discrete' else
                      TrainMolecularMetrics(infos))
-    sampling_metrics = SamplingMolecularMetrics(infos, train_smiles=None)
+    # sampling_metrics = SamplingMolecularMetrics(infos, train_smiles=None)
     visualization_tools = MolecularVisualization(getattr(cfg.dataset, "remove_h", False), dataset_infos=infos)
+
+    # train SMILES 수집해서 novelty 등의 기준 세트로 사용
+    def _collect_train_smiles(dm):
+        ds = getattr(dm, "train_dataset", None)
+        if ds is None:
+            return None
+        base = getattr(ds, "dataset", ds)  # Subset 대비
+        smi = []
+        for i in range(len(base)):
+            g = base[i]
+            s = getattr(g, "smiles", None)
+            if isinstance(s, (list, tuple)):
+                smi.extend([si for si in s if isinstance(si, str) and si])
+            elif isinstance(s, str) and s:
+                smi.append(s)
+        return smi or None
+
+    train_smiles = _collect_train_smiles(dm)
+    print(f"[INFO] collected {0 if train_smiles is None else len(train_smiles)} train SMILES for novelty")
+    sampling_metrics = SamplingMolecularMetrics(infos, train_smiles)
 
     model_kwargs = {
         'dataset_infos': infos,
@@ -223,6 +243,8 @@ def main(cfg: DictConfig):
         'domain_features': domain_features,
         'y_loss_mode': getattr(cfg.train, "y_loss_mode", "none"),
     }
+
+
 
     # ── (2) resume/test-only 처리 ───────────────────────────────────────────
     if cfg.general.test_only:
