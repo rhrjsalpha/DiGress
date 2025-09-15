@@ -3,6 +3,12 @@ import torch
 from src import utils
 from src.diffusion import diffusion_utils
 
+def _safe_t_int_from_normalized(t_norm: torch.Tensor, length: int) -> torch.Tensor:
+    """t_norm∈[0,1] → 안전한 정수 인덱스 [0, length-1]"""
+    # float 정규화 값이 1.0에 딱 걸려도 마지막 인덱스로만 가도록 미세하게 절단
+    t_norm = torch.clamp(t_norm, 0.0, 1.0 - 1e-8)
+    t_int = torch.floor(t_norm * length).long()
+    return torch.clamp(t_int, 0, length - 1)
 
 class PredefinedNoiseSchedule(torch.nn.Module):
     """
@@ -85,17 +91,38 @@ class PredefinedNoiseScheduleDiscrete(torch.nn.Module):
         self.alphas_bar = torch.exp(log_alpha_bar)
         # print(f"[Noise schedule: {noise_schedule}] alpha_bar:", self.alphas_bar)
 
+    # def forward(self, t_normalized=None, t_int=None):
+    #     assert int(t_normalized is None) + int(t_int is None) == 1
+    #     if t_int is None:
+    #         t_int = torch.round(t_normalized * self.timesteps)
+    #     t_int = torch.clamp(t_int.long(), min=0, max=self.timesteps - 1)
+    #     return self.betas[t_int.long()]
     def forward(self, t_normalized=None, t_int=None):
         assert int(t_normalized is None) + int(t_int is None) == 1
         if t_int is None:
-            t_int = torch.round(t_normalized * self.timesteps)
-        return self.betas[t_int.long()]
+            t_int = _safe_t_int_from_normalized(t_normalized, self.timesteps)
+        else:
+            t_int = torch.clamp(t_int.long(), 0, self.timesteps - 1)
 
+        betas = self.betas.to(t_int.device)
+        return betas.index_select(0, t_int.view(-1)).view_as(t_int)  # 안전한 인덱싱
+
+    #def get_alpha_bar(self, t_normalized=None, t_int=None):
+    #    assert int(t_normalized is None) + int(t_int is None) == 1
+    #    if t_int is None:
+    #        t_int = torch.round(t_normalized * self.timesteps)
+    #    t_int = torch.clamp(t_int.long(), min=0, max=self.timesteps - 1)
+    #    # print("t_int.type",type(t_int))
+    #    return self.alphas_bar.to(t_int.device)[t_int.long()]
     def get_alpha_bar(self, t_normalized=None, t_int=None):
         assert int(t_normalized is None) + int(t_int is None) == 1
         if t_int is None:
-            t_int = torch.round(t_normalized * self.timesteps)
-        return self.alphas_bar.to(t_int.device)[t_int.long()]
+            t_int = _safe_t_int_from_normalized(t_normalized, self.timesteps)
+        else:
+            t_int = torch.clamp(t_int.long(), 0, self.timesteps - 1)
+
+        alphas_bar = self.alphas_bar.to(t_int.device)
+        return alphas_bar.index_select(0, t_int.view(-1)).view_as(t_int)
 
 
 class DiscreteUniformTransition:
@@ -219,7 +246,7 @@ class AbsorbingStateTransition:
         self.u_e[:, :, abs_state] = 1
 
         self.u_y = torch.zeros(1, self.y_classes, self.y_classes)
-        self.u_e[:, :, abs_state] = 1
+        self.u_y[:, :, abs_state] = 1
 
     def get_Qt(self, beta_t):
         """ Returns two transition matrix for X and E"""

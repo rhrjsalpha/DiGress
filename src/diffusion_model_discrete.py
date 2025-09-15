@@ -268,7 +268,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # --- keep original SMILES for panel (once per sample order) ---
         if not hasattr(self, "_test_smiles"):
             self._test_smiles = []
-        print("self._test_smiles",self._test_smiles)
+        #print("self._test_smiles",self._test_smiles)
 
         smi = getattr(data, "smiles", None)
         if smi is not None:
@@ -391,6 +391,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         compute it so that you see it when you've made a mistake in your noise schedule.
         """
         # Compute the last alpha value, alpha_T.
+        #bs = X.size(0)
+        #device = X.device
         ones = torch.ones((X.size(0), 1), device=X.device)
         Ts = self.T * ones
         alpha_t_bar = self.noise_schedule.get_alpha_bar(t_int=Ts)  # (bs, 1)
@@ -543,6 +545,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # When evaluating, the loss for t=0 is computed separately
         lowest_t = 0 if self.training else 1
         t_int = torch.randint(lowest_t, self.T + 1, size=(X.size(0), 1), device=X.device).float()  # (bs, 1)
+        # t_int = torch.randint(lowest_t, self.T, size=(X.size(0), 1), device=X.device).float()
+
         s_int = t_int - 1
 
         t_float = t_int / self.T
@@ -594,6 +598,16 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # 1.
         N = node_mask.sum(1).long()
         log_pN = self.node_dist.log_prob(N)
+
+        def _sanitize_indices(vals, num_classes, name):
+            if vals is None or vals.numel() == 0:
+                return vals
+            vmin = int(vals.min())
+            vmax = int(vals.max())
+            if vmin < 0 or vmax >= num_classes:
+                print(f"[WARN] {name} index out of bounds: min={vmin}, max={vmax}, classes={num_classes} -> clamping")
+                return vals.clamp(0, num_classes - 1)
+            return vals
 
         # 2. The KL between q(z_T | x) and p(z_T) = Uniform(1/num_classes). Should be close to zero.
         kl_prior = self.kl_prior(X, E, node_mask)
