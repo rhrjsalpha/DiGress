@@ -96,7 +96,7 @@ def build_trainer(cfg, callbacks, name: str):
         check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
         gradient_clip_val=cfg.train.clip_grad,
         fast_dev_run=(name == 'debug'),
-        enable_progress_bar=False,
+        enable_progress_bar=True,
         callbacks=callbacks,
         log_every_n_steps=50 if name != 'debug' else 1,
         logger=[csv_logger],

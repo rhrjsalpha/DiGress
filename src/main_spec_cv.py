@@ -40,10 +40,10 @@ def _auto_project_root() -> Path:
 
 PROJECT_ROOT_DEFAULT = _auto_project_root()
 DATA_DIR_DEFAULT     = PROJECT_ROOT_DEFAULT / "data" / "csv"
-
+print(DATA_DIR_DEFAULT)
 # ⚠️ 데이터 파일 기본값 (원하면 파일명만 바꿔도 됩니다)
-TRAIN_CSV_DEFAULT = DATA_DIR_DEFAULT / "QM_EM_ABS_stratified_train_resplit_with_mu_eps.csv"# "EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
-TEST_CSV_DEFAULT  = DATA_DIR_DEFAULT / "QM_EM_ABS_stratified_test_resplit_with_mu_eps.csv"#"EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"
+TRAIN_CSV_DEFAULT = DATA_DIR_DEFAULT / "EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"# "EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
+TEST_CSV_DEFAULT  = DATA_DIR_DEFAULT / "EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"#"EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"
 
 OUT_ROOT_DEFAULT     = PROJECT_ROOT_DEFAULT / "cv_runs"
 NAME_PREFIX_DEFAULT  = "specCV"
