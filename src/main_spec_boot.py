@@ -32,8 +32,8 @@ USE_INLINE_SETTINGS = True
 QUICK_SETTINGS = dict(
     # 경로
     project_root=None,  # <repo>/src/main_spec.py 자동 탐색
-    train_csv=r"C:\Users\kogun\PycharmProjects\DiGress\data\csv\EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv",
-    test_csv=r"C:\Users\kogun\PycharmProjects\DiGress\data\csv\EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv",
+    train_csv=r"C:\Users\analcheminfo\PycharmProjects\DiGress\data\csv\EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv",
+    test_csv=r"C:\Users\analcheminfo\PycharmProjects\DiGress\data\csv\EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv",
     out_root=None,  # 기본: <project_root>/bootstrap_cv_like_notval
     name_prefix="specBSEVAL",
 
