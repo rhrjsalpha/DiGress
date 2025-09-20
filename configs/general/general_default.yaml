@@ -2,7 +2,7 @@
 name: 'graph-tf-model'      # Warning: 'debug' and 'test' are reserved name that have a special behavior
 
 wandb: 'disabled'             # online | offline | disabled
-gpus: 3                    # Multi-gpu is not implemented on this branch
+gpus: 1                    # Multi-gpu is not implemented on this branch
 
 resume: null            # If resume, path to ckpt file from outputs directory in main directory / 학습 재개할 체크포인트 경로
 test_only: null         # Use absolute path / 절대경로 체크포인트를 주면 학습 없이 trainer.test()만

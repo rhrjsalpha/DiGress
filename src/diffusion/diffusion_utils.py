@@ -12,7 +12,7 @@ def sum_except_batch(x):
 
 def assert_correctly_masked(variable, node_mask):
     assert (variable * (1 - node_mask.long())).abs().max().item() < 1e-4, \
-        'Variables not masked properly.'
+        f'Variables not masked properly., {variable.shape, node_mask.shape, (1 - node_mask.long()).abs().max().item()}' # \n{node_mask}
 
 
 def sample_gaussian(size):

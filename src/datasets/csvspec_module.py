@@ -13,11 +13,12 @@ import pandas as pd
 import torch
 from torch_geometric.data import InMemoryDataset, Data
 from torch_geometric.loader import DataLoader
+from torch.utils.data import DataLoader as TorchDataLoader
 import torch.nn.functional as F
 from rdkit import Chem
 from rdkit import RDLogger
 from rdkit.Chem import Draw
-
+from omegaconf import OmegaConf
 # RDKit 경고 숨김
 RDLogger.DisableLog('rdApp.*')
 
@@ -461,6 +462,65 @@ def to_digress_edge5(data):
     data.edge_attr = F.one_hot(t_idx + 1, num_classes=5).to(torch.float32)
     return data
 
+# === NEW: PyG Data 배치를 (B,N,dx)/(B,N,N,de)/(B,N)로 패딩하는 collate ===
+def collate_dense_padded(batch, MAX_N=None):
+    """
+    batch: List[torch_geometric.data.Data] with fields:
+      - x: (n_i, dx)
+      - edge_index: (2, m_i)
+      - edge_attr: (m_i, de)  (여기선 to_digress_edge5로 5채널 원핫)
+      - y: (1, L)  또는 (L,)
+    return:
+      X: (B, N, dx), E: (B, N, N, de), Y: (B, L), M: (B, N)
+    """
+    import torch
+
+    # feature 크기 파악
+    d_x = int(batch[0].x.size(-1)) if getattr(batch[0], "x", None) is not None else 0
+    if getattr(batch[0], "edge_attr", None) is not None and batch[0].edge_attr.numel() > 0:
+        d_e = int(batch[0].edge_attr.size(-1))
+    else:
+        d_e = 5  # DiGress 규약 기본(무결합 포함 5채널)
+
+    # 배치 내 최대 노드 수 N 결정 (또는 고정 MAX_N)
+    n_list = [int(d.x.size(0)) for d in batch]
+    N = int(MAX_N) if (MAX_N is not None) else max(n_list)
+
+    Xs, Es, Ms, Ys = [], [], [], []
+    for data in batch:
+        n = int(data.x.size(0))
+
+        X_pad = torch.zeros(N, d_x, dtype=data.x.dtype)
+        E_pad = torch.zeros(N, N, d_e, dtype=(data.edge_attr.dtype if getattr(data, "edge_attr", None) is not None and data.edge_attr.numel() > 0 else torch.float32))
+        M_pad = torch.zeros(N, dtype=torch.float32)
+
+        # 노드/마스크
+        X_pad[:n] = data.x
+        M_pad[:n] = 1.0
+
+        # 엣지(N×N×de) 채우기
+        if getattr(data, "edge_index", None) is not None and data.edge_index.numel() > 0:
+            ei = data.edge_index.long()  # (2, m)
+            ea = data.edge_attr
+            # (i,j)가 n 범위 안에 있다고 가정 (RDKit 그래프)
+            E_pad[ei[0], ei[1]] = ea
+
+        # y: (1,L) → (L,)
+        y = data.y
+        y = y.view(-1).to(torch.float32)
+
+        Xs.append(X_pad)
+        Es.append(E_pad)
+        Ms.append(M_pad)
+        Ys.append(y)
+
+    X = torch.stack(Xs, dim=0)      # (B,N,dx)
+    E = torch.stack(Es, dim=0)      # (B,N,N,de)
+    M = torch.stack(Ms, dim=0)      # (B,N)
+    Y = torch.stack(Ys, dim=0)      # (B,L)
+
+    return X, E, Y, M
+
 # --- 2) DataModule: CSVSpecDataset_for_Diffusion 그대로 감싸서 train/val/test 구성 ---
 class CSVSpecDataModule(AbstractDataModule):
     def __init__(
@@ -610,19 +670,64 @@ class CSVSpecDataModule(AbstractDataModule):
         self.e_dim = self.de
         self.y_dim = self.dy
 
+        # ✅ pad_to_n을 안전하게 읽어서 멤버로 저장
+        self.pad_to_n = None
+        try:
+            if self.cfg is not None and OmegaConf.is_config(self.cfg):
+                # data.pad_to_n 키가 없으면 None
+                self.pad_to_n = OmegaConf.select(self.cfg, "data.pad_to_n", default=None)
+            elif isinstance(self.cfg, dict):
+                self.pad_to_n = (self.cfg.get("data") or {}).get("pad_to_n")
+        except Exception:
+            self.pad_to_n = None
+
     # 필요시 DataLoader를 커스터마이즈
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
-
+#
     def val_dataloader(self):
         if getattr(self, "val_dataset", None) is None:
             return DataLoader([], batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
         return DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
-
+#
     def test_dataloader(self):
         if getattr(self, "test_dataset", None) is None:
             return DataLoader([], batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
         return DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+
+    #def train_dataloader(self):
+    #    return TorchDataLoader(
+    #        self.train_dataset,
+    #        batch_size=self.batch_size,
+    #        shuffle=True,
+    #        num_workers=self.num_workers,
+    #        pin_memory=True,
+    #        collate_fn=lambda b: collate_dense_padded(b, MAX_N=self.pad_to_n),
+    #    )
+#
+    #def val_dataloader(self):
+    #    if getattr(self, "val_dataset", None) is None:
+    #        return TorchDataLoader([], batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+    #    return TorchDataLoader(
+    #        self.val_dataset,
+    #        batch_size=self.batch_size,
+    #        shuffle=False,
+    #        num_workers=self.num_workers,
+    #        pin_memory=True,
+    #        collate_fn=lambda b: collate_dense_padded(b, MAX_N=self.pad_to_n),
+    #    )
+#
+    #def test_dataloader(self):
+    #    if getattr(self, "test_dataset", None) is None:
+    #        return TorchDataLoader([], batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+    #    return TorchDataLoader(
+    #        self.test_dataset,
+    #        batch_size=self.batch_size,
+    #        shuffle=False,
+    #        num_workers=self.num_workers,
+    #        pin_memory=True,
+    #        collate_fn=lambda b: collate_dense_padded(b, MAX_N=self.pad_to_n),
+    #    )
 
 
 # --- 3) Dataset Infos: 원자/결합/노드 통계를 구성 (DiGress 모델 입출력 차원 계산에 필요) ---

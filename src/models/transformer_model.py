@@ -142,6 +142,10 @@ class NodeEdgeBlock(nn.Module):
         x_mask = node_mask.unsqueeze(-1)        # bs, n, 1
         e_mask1 = x_mask.unsqueeze(2)           # bs, n, 1, 1
         e_mask2 = x_mask.unsqueeze(1)           # bs, 1, n, 1
+        e_mask = e_mask1 * e_mask2
+
+        X = X * x_mask
+        E = E * e_mask
 
         # 1. Map X to keys and queries
         Q = self.q(X) * x_mask           # (bs, n, dx)
@@ -176,8 +180,9 @@ class NodeEdgeBlock(nn.Module):
         newE = ye1 + (ye2 + 1) * newE
 
         # Output E
-        newE = self.e_out(newE) * e_mask1 * e_mask2      # bs, n, n, de
-        diffusion_utils.assert_correctly_masked(newE, e_mask1 * e_mask2)
+        newE = self.e_out(newE)
+        newE = newE * e_mask      # bs, n, n, de
+        diffusion_utils.assert_correctly_masked(newE, e_mask)
 
         # Compute attentions. attn is still (bs, n, n, n_head, df)
         softmax_mask = e_mask2.expand(-1, n, -1, self.n_head)    # bs, 1, n, 1
@@ -253,6 +258,15 @@ class GraphTransformer(nn.Module):
                                        nn.Linear(hidden_mlp_dims['y'], output_dims['y']))
 
     def forward(self, X, E, y, node_mask):
+        # --- sanitize mask & pre-mask inputs ---
+        node_mask = (node_mask > 0.5).to(X.dtype)  # 0/1 이진화
+        mX = node_mask.unsqueeze(-1)  # (B,N,1)
+        mE = (node_mask.unsqueeze(2).unsqueeze(-1) *  # (B,N,1,1)
+              node_mask.unsqueeze(1).unsqueeze(-1))  # (B,1,N,1) -> (B,N,N,1)
+
+        X = torch.nan_to_num(X) * mX
+        E = torch.nan_to_num(E) * mE
+        #####
         bs, n = X.shape[0], X.shape[1]
 
         diag_mask = torch.eye(n)
