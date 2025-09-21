@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 스펙트럼(+ solvent_phase, pH 등) 조건으로 분자 생성 Diffusion 학습 엔트리
-- CSVSpecDataset(당신이 올린 csv_spectrum_dataset.py) 그대로 사용
+- CSVSpecDataset 그대로 사용
 - edge_attr(6ch: 4타입+conj+ring) → DiGress 규약 5채널(one-hot: [no,single,double,trip,arom])로 변환
 - DatasetInfos를 동봉하여 compute_input_output_dims까지 한 번에 연결
 """
@@ -48,7 +48,7 @@ from analysis.visualization import MolecularVisualization
 from datasets.csv_spectrum_dataset import CSVSpecDataset
 from src.datasets.csvspec_module import CSVSpecDataModule, CSVSpecInfos
 warnings.filterwarnings("ignore", category=PossibleUserWarning)
-
+from pytorch_lightning.callbacks import Callback
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 유틸: 장치 해석
@@ -161,6 +161,63 @@ def get_resume_adaptive(cfg, model_kwargs):
     new_cfg = utils.update_config_with_new_keys(new_cfg, saved_cfg)
     return new_cfg, model
 
+class MilestoneCheckpointCallback(Callback):
+    def __init__(self, epochs=None, every=None, filename_prefix="milestone"):
+        super().__init__()
+        self.epochs = set(epochs or [])
+        self.every = int(every) if every else None
+        self.filename_prefix = filename_prefix
+
+    def _is_milestone(self, epoch):
+        e = epoch + 1
+        return (e in self.epochs) or (self.every and e % self.every == 0)
+
+    def _is_global_zero(self, trainer):
+        try:
+            return trainer.is_global_zero
+        except Exception:
+            return getattr(trainer, "global_rank", 0) == 0
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch
+        if not self._is_milestone(epoch):
+            return
+        if not self._is_global_zero(trainer):
+            return
+        run = pl_module.cfg.general.name
+        os.makedirs(f"checkpoints/{run}", exist_ok=True)
+        path = f"checkpoints/{run}/{self.filename_prefix}_e{epoch+1}.ckpt"
+        trainer.save_checkpoint(path)
+        print(f"[MilestoneCKPT] saved {path}")
+
+class MilestoneCheckpointCallback(Callback):
+    def __init__(self, epochs=None, every=None, filename_prefix="milestone"):
+        super().__init__()
+        self.epochs = set(epochs or [])
+        self.every = int(every) if every else None
+        self.filename_prefix = filename_prefix
+
+    def _is_milestone(self, epoch):
+        e = epoch + 1
+        return (e in self.epochs) or (self.every and e % self.every == 0)
+
+    def _is_global_zero(self, trainer):
+        try:
+            return trainer.is_global_zero
+        except Exception:
+            return getattr(trainer, "global_rank", 0) == 0
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch
+        if not self._is_milestone(epoch):
+            return
+        if not self._is_global_zero(trainer):
+            return
+        run = pl_module.cfg.general.name
+        os.makedirs(f"checkpoints/{run}", exist_ok=True)
+        path = f"checkpoints/{run}/{self.filename_prefix}_e{epoch+1}.ckpt"
+        trainer.save_checkpoint(path)
+        print(f"[MilestoneCKPT] saved {path}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 @hydra.main(version_base='1.3', config_path='../configs', config_name='config')
@@ -211,7 +268,6 @@ def main(cfg: DictConfig):
     train_metrics = (TrainMolecularMetricsDiscrete(infos)
                      if cfg.model.type == 'discrete' else
                      TrainMolecularMetrics(infos))
-    # sampling_metrics = SamplingMolecularMetrics(infos, train_smiles=None)
     visualization_tools = MolecularVisualization(getattr(cfg.dataset, "remove_h", False), dataset_infos=infos)
 
     # train SMILES 수집해서 novelty 등의 기준 세트로 사용
@@ -244,8 +300,6 @@ def main(cfg: DictConfig):
         'y_loss_mode': getattr(cfg.train, "y_loss_mode", "none"),
     }
 
-
-
     # ── (2) resume/test-only 처리 ───────────────────────────────────────────
     if cfg.general.test_only:
         cfg, _ = get_resume(cfg, model_kwargs)
@@ -275,6 +329,8 @@ def main(cfg: DictConfig):
             every_n_epochs=1
         )
         callbacks += [last_cb, ckpt_cb]
+
+        callbacks.append(MilestoneCheckpointCallback(epochs=[3, 5, 10]))
 
     if cfg.train.ema_decay > 0:
         callbacks.append(utils.EMA(decay=cfg.train.ema_decay))

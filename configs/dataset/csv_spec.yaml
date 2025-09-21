@@ -2,9 +2,9 @@
 name: csvspec
 
 # CSV 경로 (필수)
-train_csv: "/home/user/Spectral_Data/ABS_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
+train_csv: "/home/user/Spectral_Data/QM_stratified_train_resplit_with_mu_eps.csv" # train_good_rows.csv QM_stratified_train_resplit_with_mu_eps
 val_csv:   "" # D:/data/val.csv
-test_csv:  "/home/user/Spectral_Data/ABS_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"
+test_csv:  "/home/user/Spectral_Data/QM_stratified_test_resplit_with_mu_eps.csv" # test_good_rows.csv QM_stratified_test_resplit_with_mu_eps
 
 # 컬럼/스펙트럼 범위 (당신의 CSV에 맞게)
 smiles_col: SMILES         # SMILES가 없고 InChI만 있으면 null로 두세요

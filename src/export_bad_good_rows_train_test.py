@@ -1,91 +1,124 @@
-# export_bad_good_rows_train_test_v2.py
+# export_bad_good_rows_by_ident.py
 # -*- coding: utf-8 -*-
-import pandas as pd
-from pathlib import Path
+"""
+bad_rank*.csv 의 ident 컬럼(SMILES | InChI … 형태)을 파싱해
+원본 CSV에서 동일 InChI/SMILES 를 가진 행을 bad/good 으로 분리 저장.
 
-# ==== 경로 수정 ====
-BAD_DIR   = Path(r"C:\Users\analcheminfo\PycharmProjects\DiGress\outputs\2025-09-20\12-47-17-graph-tf-model\_bad_batches")
+출력:
+  <BAD_DIR>/train_bad_rows.csv,  train_good_rows.csv
+  <BAD_DIR>/test_bad_rows.csv,   test_good_rows.csv
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterable, Tuple, Set, Optional, List
+
+import pandas as pd
+
+
+# ====== 경로를 환경에 맞게 수정하세요 ======
+BAD_DIR   = Path(r"C:\Users\analcheminfo\PycharmProjects\DiGress\outputs\2025-09-20\14-22-17-graph-tf-model\_bad_batches")
 SRC_TRAIN = Path(r"C:\Users\analcheminfo\PycharmProjects\DiGress\data\csv\ABS_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv")
 SRC_TEST  = Path(r"C:\Users\analcheminfo\PycharmProjects\DiGress\data\csv\ABS_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv")
 
-def _read_log():
-    files = sorted(BAD_DIR.glob("bad_rank*.csv"))
+# 원본 CSV의 컬럼명(필요시 바꾸세요)
+INCHI_COL  = "InChI"
+SMILES_COL = "SMILES"
+
+
+def _read_log_concat(bad_dir: Path) -> pd.DataFrame:
+    files = sorted(bad_dir.glob("bad_rank*.csv"))
     if not files:
-        raise SystemExit(f"No bad_rank*.csv in {BAD_DIR}")
-    log = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+        raise SystemExit(f"No bad_rank*.csv in {bad_dir}")
+    df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+    if "split" not in df.columns:
+        df["split"] = "test"
+    if "ident" not in df.columns:
+        df["ident"] = ""
+    return df
 
-    # split 컬럼이 없으면 'test'로 채워서 호환
-    if "split" not in log.columns:
-        log["split"] = "test"
 
-    # 안전성: batch_idx가 문자열이면 정수화
-    if "batch_idx" in log.columns:
-        log["batch_idx"] = pd.to_numeric(log["batch_idx"], errors="coerce").astype("Int64")
-    else:
-        # 아주 옛 포맷이면 대신 'batch' 같은 걸 찾을 수도 있음
-        pass
-    return log
+def _parse_ident_cell(cell: str) -> Tuple[Set[str], Set[str]]:
+    """'SMILES ... | InChI=...' 섞인 ident 문자열에서 InChI/SMILES 집합을 분리."""
+    inchi_set: Set[str] = set()
+    smiles_set: Set[str] = set()
 
-from typing import Optional, List, Set
-def _collect_indices(log: pd.DataFrame, split: str, n_rows: Optional[int] = None) -> List[int]:
-    sub = log[log["split"] == split].copy()
-    idx: Set[int] = set()
+    if not isinstance(cell, str):
+        return inchi_set, smiles_set
 
-    # 1) indices 우선
-    if "indices" in sub.columns:
-        for s in sub["indices"].fillna("").astype(str):
-            s = s.strip()
-            if not s:
-                continue
-            for tok in s.split():
-                try:
-                    idx.add(int(tok))
-                except Exception:
-                    pass
+    parts = [p.strip() for p in cell.split("|") if isinstance(p, str) and p.strip()]
+    for p in parts:
+        if p.startswith("InChI="):
+            inchi_set.add(p.strip())
+        else:
+            # 공백 없는 토큰을 SMILES 후보로 수집(간단 기준)
+            if " " not in p:
+                smiles_set.add(p.strip())
+    return inchi_set, smiles_set
 
-    # 2) 비었으면 batch_idx 사용 (shuffle=False, batch_size=1 전제)
-    if not idx and "batch_idx" in sub.columns:
-        for b in sub["batch_idx"].dropna().tolist():
-            try:
-                i = int(b)
-                if n_rows is None or (0 <= i < n_rows):
-                    idx.add(i)
-            except Exception:
-                pass
 
-    return sorted(idx)
+def _collect_bad_idents(log: pd.DataFrame, split: str) -> Tuple[Set[str], Set[str]]:
+    sub = log.loc[log["split"] == split]
+    inchi_all: Set[str] = set()
+    smiles_all: Set[str] = set()
+    for cell in sub["ident"].fillna("").astype(str):
+        i_set, s_set = _parse_ident_cell(cell)
+        inchi_all |= i_set
+        smiles_all |= s_set
+    return inchi_all, smiles_all
 
-def _export(src_csv: Path, idx_bad: list[int], out_prefix: str):
-    if not src_csv or not src_csv.exists():
+
+def _export_by_ident(
+    src_csv: Path,
+    bad_inchi: Set[str],
+    bad_smiles: Set[str],
+    out_prefix: str,
+) -> None:
+    if not src_csv.exists():
         print(f"[SKIP] {out_prefix}: source csv not found -> {src_csv}")
         return
-    src = pd.read_csv(src_csv)
-    bad_df  = src.iloc[idx_bad] if idx_bad else src.iloc[[]]
-    good_df = src[~src.index.isin(idx_bad)] if idx_bad else src
+
+    df = pd.read_csv(src_csv)
+    cols = set(df.columns)
+
+    # ident가 없으면 아무 것도 분리하지 않음(경고만 출력)
+    if not bad_inchi and not bad_smiles:
+        print(f"[WARN] {out_prefix}: ident 집합이 비어 있어 아무 것도 분리하지 않습니다.")
+        bad_df = df.iloc[[]]
+        good_df = df
+    else:
+        bad_mask = pd.Series(False, index=df.index)
+        if INCHI_COL in cols and bad_inchi:
+            bad_mask |= df[INCHI_COL].astype(str).str.strip().isin({s.strip() for s in bad_inchi})
+        if SMILES_COL in cols and bad_smiles:
+            bad_mask |= df[SMILES_COL].astype(str).str.strip().isin({s.strip() for s in bad_smiles})
+        bad_df = df.loc[bad_mask]
+        good_df = df.loc[~bad_mask]
 
     BAD_DIR.mkdir(parents=True, exist_ok=True)
-    bad_path  = BAD_DIR / f"{out_prefix}_bad_rows.csv"
-    good_path = BAD_DIR / f"{out_prefix}_good_rows.csv"
-    bad_df.to_csv(bad_path, index=False)
-    good_df.to_csv(good_path, index=False)
+    (BAD_DIR / f"{out_prefix}_bad_rows.csv").write_text("", encoding="utf-8")  # touch
+    bad_df.to_csv(BAD_DIR / f"{out_prefix}_bad_rows.csv", index=False)
+    good_df.to_csv(BAD_DIR / f"{out_prefix}_good_rows.csv", index=False)
+
     print(f"[SAVE] {out_prefix}: bad={len(bad_df)}, good={len(good_df)}")
-    print(f"       -> {bad_path.name}, {good_path.name}")
+    print(f"       -> {(BAD_DIR / f'{out_prefix}_bad_rows.csv').name}, "
+          f"{(BAD_DIR / f'{out_prefix}_good_rows.csv').name}")
+
 
 def main():
     BAD_DIR.mkdir(parents=True, exist_ok=True)
-    log = _read_log()
+    log = _read_log_concat(BAD_DIR)
 
-    # 원본 CSV 길이(선택): batch_idx 범위 체크용
-    n_train = pd.read_csv(SRC_TRAIN).shape[0] if SRC_TRAIN.exists() else None
-    n_test  = pd.read_csv(SRC_TEST ).shape[0] if SRC_TEST.exists()  else None
+    # train
+    train_inchi, train_smiles = _collect_bad_idents(log, "train")
+    _export_by_ident(SRC_TRAIN, train_inchi, train_smiles, "train")
 
-    train_bad = _collect_indices(log, "train", n_rows=n_train)
-    test_bad  = _collect_indices(log, "test",  n_rows=n_test)
+    # test
+    test_inchi, test_smiles = _collect_bad_idents(log, "test")
+    _export_by_ident(SRC_TEST, test_inchi, test_smiles, "test")
 
-    _export(SRC_TRAIN, train_bad, "train")
-    _export(SRC_TEST,  test_bad,  "test")
 
 if __name__ == "__main__":
     main()
-
 
