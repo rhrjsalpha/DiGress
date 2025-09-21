@@ -161,64 +161,6 @@ def get_resume_adaptive(cfg, model_kwargs):
     new_cfg = utils.update_config_with_new_keys(new_cfg, saved_cfg)
     return new_cfg, model
 
-class MilestoneCheckpointCallback(Callback):
-    def __init__(self, epochs=None, every=None, filename_prefix="milestone"):
-        super().__init__()
-        self.epochs = set(epochs or [])
-        self.every = int(every) if every else None
-        self.filename_prefix = filename_prefix
-
-    def _is_milestone(self, epoch):
-        e = epoch + 1
-        return (e in self.epochs) or (self.every and e % self.every == 0)
-
-    def _is_global_zero(self, trainer):
-        try:
-            return trainer.is_global_zero
-        except Exception:
-            return getattr(trainer, "global_rank", 0) == 0
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        epoch = trainer.current_epoch
-        if not self._is_milestone(epoch):
-            return
-        if not self._is_global_zero(trainer):
-            return
-        run = pl_module.cfg.general.name
-        os.makedirs(f"checkpoints/{run}", exist_ok=True)
-        path = f"checkpoints/{run}/{self.filename_prefix}_e{epoch+1}.ckpt"
-        trainer.save_checkpoint(path)
-        print(f"[MilestoneCKPT] saved {path}")
-
-class MilestoneCheckpointCallback(Callback):
-    def __init__(self, epochs=None, every=None, filename_prefix="milestone"):
-        super().__init__()
-        self.epochs = set(epochs or [])
-        self.every = int(every) if every else None
-        self.filename_prefix = filename_prefix
-
-    def _is_milestone(self, epoch):
-        e = epoch + 1
-        return (e in self.epochs) or (self.every and e % self.every == 0)
-
-    def _is_global_zero(self, trainer):
-        try:
-            return trainer.is_global_zero
-        except Exception:
-            return getattr(trainer, "global_rank", 0) == 0
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        epoch = trainer.current_epoch
-        if not self._is_milestone(epoch):
-            return
-        if not self._is_global_zero(trainer):
-            return
-        run = pl_module.cfg.general.name
-        os.makedirs(f"checkpoints/{run}", exist_ok=True)
-        path = f"checkpoints/{run}/{self.filename_prefix}_e{epoch+1}.ckpt"
-        trainer.save_checkpoint(path)
-        print(f"[MilestoneCKPT] saved {path}")
-
 # ─────────────────────────────────────────────────────────────────────────────
 @hydra.main(version_base='1.3', config_path='../configs', config_name='config')
 def main(cfg: DictConfig):
@@ -315,22 +257,31 @@ def main(cfg: DictConfig):
 
     callbacks = []
     if cfg.train.save_model:
-        ckpt_cb = ModelCheckpoint(
+        periodic_ckpt = ModelCheckpoint(
             dirpath=f"checkpoints/{cfg.general.name}",
-            filename='{epoch}',
-            monitor='val/epoch_NLL',
-            save_top_k=5,
-            mode='min',
-            every_n_epochs=1
+            filename="ep{epoch:03d}",
+            monitor=None,  # ← 주기 저장 모드
+            every_n_epochs=5,  # ← 5 에폭마다 저장
+            save_top_k=-1,  # 모두 보관 (원하면 1로 줄여도 됨)
+            save_last=False,
+            save_weights_only=True,  # 빠르고 작게 저장하려면 추천
+            save_on_train_epoch_end=True,  # 검증 없어도 train epoch 끝에서 저장
+        )
+        best_ckpt = ModelCheckpoint(
+            dirpath=f"checkpoints/{cfg.general.name}",
+            filename="{epoch}-{val_epoch_NLL:.3f}",
+            monitor="val/epoch_NLL",
+            mode="min",
+            save_top_k=3,
+            save_last=True,  # 마지막도 한 개 남기고 싶다면
+            save_weights_only=True,
         )
         last_cb = ModelCheckpoint(
             dirpath=f"checkpoints/{cfg.general.name}",
             filename='last',
             every_n_epochs=1
         )
-        callbacks += [last_cb, ckpt_cb]
-
-        callbacks.append(MilestoneCheckpointCallback(epochs=[3, 5, 10]))
+        callbacks += [best_ckpt, periodic_ckpt, last_cb]
 
     if cfg.train.ema_decay > 0:
         callbacks.append(utils.EMA(decay=cfg.train.ema_decay))
