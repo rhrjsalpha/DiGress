@@ -38,7 +38,7 @@ USE_INLINE_SETTINGS = True
 
 # 기본 공통 값
 DATASET_NAME   = "csvspec"
-GENERAL_GPUS   = 1
+GENERAL_GPUS   = 3
 N_EPOCHS       = 100
 FINAL_SAMPLES  = 100
 
@@ -75,7 +75,7 @@ COMMON_SETTINGS = dict(
     level_check_ignore="",
 
     smoke_epochs=1,
-    log_smoke=True,
+    log_smoke=False,
     keep_failed_trials=True,
 )
 
@@ -107,6 +107,17 @@ EXTRA_OVERRIDES_SMOKE: list[str] = [
     f"dataset.name={DATASET_NAME}",
     "train.save_model=False",
     f"general.gpus={GENERAL_GPUS}",
+
+    # ↓↓↓ 스모크에서만 시각화/샘플 생성 최소화 ↓↓↓
+    "general.samples_to_generate=1",  # 배치마다 샘플 생성 X
+    "general.samples_to_save=1",  # 샘플 이미지/파일 저장 X
+    "general.chains_to_save=1",  # 체인 GIF 저장 X
+    "general.number_chain_steps=1",  # 혹시 체인을 그려도 1 step
+
+    # 파이널용 키도 스모크에선 0으로 (혹시 트리거되더라도 무해)
+    "general.final_model_samples_to_generate=10",
+    "general.final_model_samples_to_save=1",
+    "general.final_model_chains_to_save=1",
 ]
 
 
@@ -185,16 +196,22 @@ def _run_with_logs(cmd: List[str], log_dir: Optional[Path], enable: bool) -> int
     env = dict(os.environ)
     env["HYDRA_FULL_ERROR"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
+
     # python -u 보장
+    print("python -u 보장",cmd, log_dir, enable)
     if cmd and cmd[0] == sys.executable and "-u" not in cmd[1:3]:
+        print("if cmd")
         cmd = [sys.executable, "-u"] + cmd[1:]
     if enable and log_dir is not None:
+        print("if enable and log_dir is not None")
         (log_dir / "logs").mkdir(parents=True, exist_ok=True)
         with open(log_dir / "logs" / "stdout.txt", "w", encoding="utf-8") as so, \
              open(log_dir / "logs" / "stderr.txt", "w", encoding="utf-8") as se:
             return subprocess.run(cmd, shell=False, text=True, stdout=so, stderr=se, env=env).returncode
     else:
+        print("else")
         return subprocess.run(cmd, shell=False, env=env).returncode
+
 
 def _sanity_check_levels(train_df: pd.DataFrame, test_df: pd.DataFrame, ignore_cols: List[str]) -> Dict[str, List[str]]:
     bad: Dict[str, List[str]] = {}
@@ -220,6 +237,7 @@ def _pair_sig(train_idx: np.ndarray, test_idx: Optional[np.ndarray]) -> str:
 
 def _sample_bootstrap_indices(labels: Optional[np.ndarray], n_total: int, size: float,
                               with_repl: bool, rng: np.random.Generator) -> np.ndarray:
+    print("_sample_bootstrap_indices")
     if labels is None:
         n_pick = max(1, int(round(n_total * size)))
         return (rng.integers(0, n_total, size=n_pick, endpoint=False)
@@ -411,6 +429,7 @@ def _maybe_reuse_safe(a, safe_root: Path, need_n: int) -> List[Dict]:
 
 def _search_safe_needed(a, df: pd.DataFrame, main_spec: Path, out_root: Path,
                         ext_test_csv: Optional[Path], already: int) -> List[Dict]:
+
     safe_root = out_root / "safe_split"
     _ensure_dir(safe_root)
     rng = np.random.default_rng(a.seed)
@@ -474,9 +493,12 @@ def _search_safe_needed(a, df: pd.DataFrame, main_spec: Path, out_root: Path,
             "dataset.val_csv=null",
             f'dataset.test_csv="{test_arg}"',
             f"general.name={a.name_prefix}_SMOKE_trial{trials:04d}",
+            "train.num_workers=0",
             f"train.n_epochs={a.smoke_epochs}",
             *extra_over,
         ]
+        os.environ["SMOKE_VIS_MAX"] = "2"  # 0이면 완전 비활성, 2면 최대 2개만 그림
+        os.environ["SMOKE_VIS_EVERY"] = "8"  # 8번 중 1번만 시각화(주기 줄이기)
         ret = _run_with_logs([sys.executable, str(main_spec), *overrides], trial_dir, enable=a.log_smoke)
         if ret != 0:
             print(f"[TRIAL {trials:04d}] smoke FAILED(ret={ret})")

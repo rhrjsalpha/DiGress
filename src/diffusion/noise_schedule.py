@@ -122,7 +122,7 @@ class PredefinedNoiseScheduleDiscrete(torch.nn.Module):
             t_int = torch.clamp(t_int.long(), 0, self.timesteps - 1)
 
         alphas_bar = self.alphas_bar.to(t_int.device)
-        return alphas_bar.index_select(0, t_int.view(-1)).view_as(t_int)
+        return alphas_bar.index_select(0, t_int.reshape(-1)).view_as(t_int)
 
 
 class DiscreteUniformTransition:

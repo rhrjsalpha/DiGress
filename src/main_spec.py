@@ -9,7 +9,7 @@
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Windows에서 DDP/Gloo 안전옵션 (torch import 전에)
-import os
+import os, csv
 os.environ.setdefault("GLOO_DEVICE_TRANSPORT", "uv")
 os.environ.setdefault("GLOO_SOCKET_IFNAME", "Loopback Pseudo-Interface 1")
 # ─────────────────────────────────────────────────────────────────────────────
@@ -22,6 +22,11 @@ from typing import Dict, List, Optional
 import torch
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
+try:
+    import torch.cuda
+    torch.cuda.memory_summary = lambda *a, **k: ""  # 아무 것도 반환하지 않게
+except Exception:
+    pass
 
 import hydra
 from omegaconf import DictConfig
@@ -49,6 +54,59 @@ from datasets.csv_spectrum_dataset import CSVSpecDataset
 from src.datasets.csvspec_module import CSVSpecDataModule, CSVSpecInfos
 warnings.filterwarnings("ignore", category=PossibleUserWarning)
 from pytorch_lightning.callbacks import Callback
+
+QUIET = os.environ.get("QUIET", "0") not in ("0", "", "false", "False", "no", "NO")
+if QUIET:
+    os.environ.setdefault("PL_DISABLE_TQDM", "0")  # tqdm 막대 끔
+    os.environ.setdefault("NCCL_DEBUG", "ERROR")   # NCCL 로그 최소화
+    os.environ.setdefault("PYTHONWARNINGS", "ignore")
+    warnings.filterwarnings("ignore")
+
+def qprint(*a, **k):
+    if not QUIET:
+        print(*a, **k)
+
+class TestMetricsCSVCallback(Callback):
+    """Test epoch 종료 시 test 요약 지표를 CSV로 저장"""
+    def __init__(self, out_dir="pl_logs", filename="test_metrics.csv"):
+        super().__init__()
+        self.out_dir = out_dir
+        self.path = os.path.join(out_dir, filename)
+        os.makedirs(self.out_dir, exist_ok=True)
+        self._header_written = os.path.exists(self.path)
+
+    def on_test_epoch_end(self, trainer, pl_module):
+        # rank 0만 기록(DDP 중복 방지)
+        if not trainer.is_global_zero:
+            return
+
+        m = trainer.callback_metrics  # dict-like
+        def pick(*names, default=None):
+            for n in names:
+                if n in m:
+                    try:
+                        return float(m[n])
+                    except Exception:
+                        pass
+            return default
+
+        epoch = int(getattr(trainer, "current_epoch", -1))
+        test_nll = pick("test/epoch_NLL", "test_NLL", "Test NLL")
+        atom_kl  = pick("test/atom_kl", "test/Atom_KL", "Test Atom type KL")
+        edge_kl  = pick("test/edge_kl", "test/Edge_KL", "Test Edge type KL")
+
+        row = {
+            "epoch": epoch,
+            "test_nll": test_nll,
+            "test_atom_kl": atom_kl,
+            "test_edge_kl": edge_kl,
+        }
+        with open(self.path, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=row.keys())
+            if not self._header_written:
+                w.writeheader()
+                self._header_written = True
+            w.writerow(row)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 유틸: 장치 해석
@@ -282,6 +340,7 @@ def main(cfg: DictConfig):
             every_n_epochs=1
         )
         callbacks += [best_ckpt, periodic_ckpt, last_cb]
+        callbacks.append(TestMetricsCSVCallback(out_dir="pl_logs", filename="test_metrics.csv"))
 
     if cfg.train.ema_decay > 0:
         callbacks.append(utils.EMA(decay=cfg.train.ema_decay))

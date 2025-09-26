@@ -5,6 +5,25 @@
 # - is_cv 플래그 지원 (train/val vs train/test)
 # - import 가능한 API(run_from_cfg) + 스크립트 직접 실행( hydra.main )
 
+# ===== 제일 위쪽(타 모듈 import 전에) =====
+def ensure_ddp_and_numba_device():
+    import os, torch
+    # LOCAL_RANK이 없으면 단일 GPU/CPU 환경일 수 있어서 기본 0으로
+    local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("RANK", "0")))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)  # Torch 먼저 고정
+        try:
+            from numba import cuda
+            cuda.select_device(local_rank)  # ★ Numba도 같은 장치로 강제
+            print(f"[DDP/Numba] Selected GPU #{local_rank} for this rank.")
+        except Exception as e:
+            print(f"[WARN] numba.cuda.select_device({local_rank}) failed: {e}")
+
+def make_soft_dtw(use_cuda: bool = True, gamma: float = 0.2, bandwidth=None, normalize=True):
+    # ★ 여기서 import → ensure 호출 후에만 실행됨
+    from src.custom_loss.soft_dtw_cuda import SoftDTW
+    return SoftDTW(use_cuda=use_cuda, gamma=gamma, bandwidth=bandwidth, normalize=normalize)
+
 import os
 import csv
 import json
@@ -31,7 +50,7 @@ from rdkit.Chem import Draw
 
 # ----- custom losses -----
 from src.custom_loss.SID_loss import sid_loss
-from src.custom_loss.soft_dtw_cuda import SoftDTW
+# from src.custom_loss.soft_dtw_cuda import SoftDTW
 from src.custom_loss.GradNorm import GradNorm
 #####
 from src.train_spectrum_GN_multiLoss import DualMilestoneEval
@@ -580,9 +599,12 @@ class SpectrumModule(pl.LightningModule):
         self.model = backbone
 
         device_cuda = torch.cuda.is_available()
-        self.softdtw = SoftDTW(use_cuda=device_cuda,
-                               gamma=float(getattr(cfg.train, "softdtw_gamma", 0.2)),
-                               bandwidth=None, normalize=True)
+        self.softdtw = make_soft_dtw(
+            use_cuda=device_cuda,
+            gamma=float(getattr(cfg.train, "softdtw_gamma", 0.2)),
+            bandwidth=None,
+            normalize=True
+        )
 
         self.loss_names: List[str] = [s.upper() for s in (cfg.train.losses or ["MSE"])]
         self.num_losses = len(self.loss_names)
@@ -850,12 +872,18 @@ def compute_metrics_on_loader(
     pl_module.eval()
 
     # ---- SoftDTW (디바이스 맞춰 생성)
-    local_softdtw = None
+    local_softdtw = make_soft_dtw(
+        use_cuda=(device.type == "cuda"),
+        gamma=float(getattr(pl_module.cfg.train, "softdtw_gamma", 0.2)),
+        bandwidth=None,
+        normalize=True
+    )
     if include_softdtw:
-        local_softdtw = SoftDTW(
+        local_softdtw = make_soft_dtw(
             use_cuda=(device.type == "cuda"),
             gamma=float(getattr(pl_module.cfg.train, "softdtw_gamma", 0.2)),
-            bandwidth=None, normalize=True
+            bandwidth=None,
+            normalize=True
         )
 
     try:

@@ -1,6 +1,6 @@
 general:
   name: spectrum_regression
-  gpus: 1          # 0|1|auto|[0,1]
+  gpus: 2          # 0|1|auto|[0,1]
   check_val_every_n_epochs: 1
   test_only: null
   gpu_monitor: false
@@ -11,14 +11,14 @@ trainer:
 
 train:
   accelerator: gpu
-  devices: 2            # GPU 2장 사용. 전부면 -1
+  devices: 1            # GPU 2장 사용. 전부면 -1
   strategy: ddp         # 또는 ddp_find_unused_false
   num_nodes: 1
-  precision: 32 # 원하면 16-mixed
+  precision: 16-mixed # 원하면 16-mixed
 
   #############
-  n_epochs: 500
-  batch_size: 256
+  n_epochs: 2000
+  batch_size: 32
   lr: 2e-4
   num_workers: 0
   save_model: true
@@ -26,7 +26,7 @@ train:
   clip_algo: "norm"
 
   # 멀티로스 + GradNorm 옵션
-  losses: ["MSE"]      # ["MSE","MAE","SOFTDTW","SID"] 등
+  losses: ["SoftDTW", "SID"]      # ["MSE","MAE","SOFTDTW","SID"] 등
   use_gradnorm: true
   alpha: 0.12
   softdtw_gamma: 0.2
@@ -37,17 +37,17 @@ train:
   seed: 0
   progress_bar: false
   ema_decay: 0
-  milestones_metrics: [500]     # ← 이 에폭에 "지표 저장" 실행
-  milestones_plots:   [500]        # ← 이 에폭에 "그림 저장"도 함께 실행
+  milestones_metrics: [10, 50, 100, 200, 300, 400, 500, 750, 1000, 1250, 1500, 2000]     # ← 이 에폭에 "지표 저장" 실행
+  milestones_plots:   [50,200, 500, 1000, 2000]        # ← 이 에폭에 "그림 저장"도 함께 실행
   milestone_n_samples: 32       # plot_all=false일 때 저장할 개수
   milestone_plot_all: true     # true면 해당 split 전체 저장
   milestone_eval_test: true    # true면 test도 함께 평가/저장
 
 dataset:
   name: "csvspec"
-  train_csv: "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
+  train_csv: "/home/user/Spectral_Data/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero"
   val_csv: ""    # 빈 문자열 => train에서 90/10 split
-  test_csv:  "C:/Users/kogun/PycharmProjects/DiGress/data/csv/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"
+  test_csv:  "/home/user/Spectral_Data/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero"
   spec_start: 200
   spec_end: 800
   solvent_vocab: ["solid","liquid","gas"]
@@ -57,7 +57,7 @@ dataset:
   add_h: false
 
 model:
-  backend: gnn         # gnn | digress
+  backend: digress         # gnn | digress
   hidden: 256
   layers: 4 # 4
   dropout: 0.1
