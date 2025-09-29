@@ -48,6 +48,11 @@ from metrics.molecular_metrics import TrainMolecularMetrics
 from metrics.molecular_metrics_discrete import TrainMolecularMetricsDiscrete
 from metrics.molecular_metrics import SamplingMolecularMetrics
 from analysis.visualization import MolecularVisualization
+import re
+from pathlib import Path
+from typing import Optional
+import shutil
+import sys, re, csv, os
 
 # 당신이 올린 데이터셋
 from datasets.csv_spectrum_dataset import CSVSpecDataset
@@ -66,47 +71,340 @@ def qprint(*a, **k):
     if not QUIET:
         print(*a, **k)
 
-class TestMetricsCSVCallback(Callback):
-    """Test epoch 종료 시 test 요약 지표를 CSV로 저장"""
-    def __init__(self, out_dir="pl_logs", filename="test_metrics.csv"):
-        super().__init__()
-        self.out_dir = out_dir
-        self.path = os.path.join(out_dir, filename)
-        os.makedirs(self.out_dir, exist_ok=True)
-        self._header_written = os.path.exists(self.path)
+_FLOAT = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+_PAT = re.compile(
+    rf"Epoch\s+(\d+)\s*:.*?Test\s*NLL[: ]\s*({_FLOAT}).*?"
+    rf"Atom[\s-]*type\s*KL[: ]\s*({_FLOAT}).*?"
+    rf"Edge[\s-]*type\s*KL[: ]\s*({_FLOAT})",
+    re.IGNORECASE,
+)
+# relaxed 먼저 정의 그대로 두고,
+_PAT_REL_VALID = re.compile(rf"Relaxed\s+validity\s+over\s+(\d+)\s+molecules:\s+({_FLOAT})%", re.IGNORECASE)
 
-    def on_test_epoch_end(self, trainer, pl_module):
-        # rank 0만 기록(DDP 중복 방지)
+# 일반 validity는 라인 시작(^)에만 매칭되게 보수적으로
+_PAT_VALID     = re.compile(rf"^\s*Validity\s+over\s+(\d+)\s+molecules:\s+({_FLOAT})%", re.IGNORECASE)
+
+_PAT_CONN      = re.compile(rf"Number of connected components of\s+(\d+)\s+molecules:\s*min:\s*({_FLOAT})\s*mean:\s*({_FLOAT})\s*max:\s*({_FLOAT})", re.IGNORECASE)
+_PAT_UNIQ      = re.compile(rf"Uniqueness\s+over\s+(\d+)\s+valid\s+molecules:\s+({_FLOAT})%", re.IGNORECASE)
+_PAT_NOV       = re.compile(rf"Novelty\s+over\s+(\d+)\s+unique\s+valid\s+molecules:\s+({_FLOAT})%", re.IGNORECASE)
+_PAT_SPLIT     = re.compile(r"Starting custom metrics", re.IGNORECASE)
+
+
+class _StdoutTee:
+    """stdout을 파일에 동시에 복사하는 간단한 tee."""
+    def __init__(self, real_stream, capture_path: Path):
+        self._real = real_stream
+        self._file = open(capture_path, "w", encoding="utf-8")
+
+    def write(self, s: str):
+        self._real.write(s)
+        self._file.write(s)
+
+    def flush(self):
+        self._real.flush()
+        self._file.flush()
+
+    def close(self):
+        try:
+            self._file.close()
+        except Exception:
+            pass
+
+    @property
+    def real(self):
+        return self._real
+
+
+class TestMetricsCSVCallback(Callback):
+    """테스트 중 stdout을 캡처해서 NLL/Atom-KL/Edge-KL을 pl_logs/version_0/test_metrics.csv로 저장"""
+    def __init__(self, filename: str = "test_metrics.csv"):
+        super().__init__()
+        self.filename = filename
+        self._initialized = False
+        self._log_dir: Optional[Path] = None
+        self._csv_path: Optional[Path] = None
+        self._header_written = False
+        self._tee: Optional[_StdoutTee] = None
+
+    def _init_dir(self, trainer):
+        if self._initialized:
+            return
+        # CSVLogger 경로 찾기
+        loggers = getattr(trainer, "loggers", None) or ([trainer.logger] if getattr(trainer, "logger", None) else [])
+        if not isinstance(loggers, (list, tuple)):
+            loggers = [loggers]
+        for lg in loggers:
+            if isinstance(lg, CSVLogger):
+                self._log_dir = Path(lg.log_dir)  # .../pl_logs/version_0
+                break
+        if self._log_dir is None:
+            self._log_dir = Path(os.getcwd()) / "pl_logs" / "version_0"  # 폴백
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._csv_path = self._log_dir / self.filename
+        self._header_written = self._csv_path.exists()
+        self._initialized = True
+
+    # ---- Lightning hooks ----
+    def on_test_start(self, trainer, pl_module):
         if not trainer.is_global_zero:
             return
+        self._init_dir(trainer)
+        # stdout 캡처 시작
+        cap_path = self._log_dir / "test_stdout_capture.log"
+        self._tee = _StdoutTee(sys.stdout, cap_path)
+        sys.stdout = self._tee  # tee로 교체
 
-        m = trainer.callback_metrics  # dict-like
-        def pick(*names, default=None):
-            for n in names:
-                if n in m:
-                    try:
-                        return float(m[n])
-                    except Exception:
-                        pass
-            return default
+    def on_test_end(self, trainer, pl_module):
+        if not trainer.is_global_zero:
+            return
+        # stdout 복구
+        if self._tee is not None:
+            sys.stdout = self._tee.real
+            self._tee.close()
+            self._tee = None
+        # 캡처 파일 파싱
+        cap_path = self._log_dir / "test_stdout_capture.log"
+        row = self._parse_from_capture(cap_path)
+        if row:
+            with open(self._csv_path, "a", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=["epoch","test_nll","test_atom_kl","test_edge_kl"])
+                if not self._header_written:
+                    w.writeheader(); self._header_written = True
+                w.writerow(row)
+        self._finalize_parse_and_write()
 
-        epoch = int(getattr(trainer, "current_epoch", -1))
-        test_nll = pick("test/epoch_NLL", "test_NLL", "Test NLL")
-        atom_kl  = pick("test/atom_kl", "test/Atom_KL", "Test Atom type KL")
-        edge_kl  = pick("test/edge_kl", "test/Edge_KL", "Test Edge type KL")
+    # ---- helper ----
+    def _parse_from_capture(self, path: Path) -> Optional[dict]:
+        if not path.exists():
+            return None
+        last = None
+        with open(path, "r", encoding="utf-8", errors="ignore") as g:
+            for line in g:
+                m = _PAT.search(line)
+                if m:
+                    last = {
+                        "epoch": int(m.group(1)),
+                        "test_nll": float(m.group(2)),
+                        "test_atom_kl": float(m.group(3)),
+                        "test_edge_kl": float(m.group(4)),
+                    }
+        return last
 
-        row = {
-            "epoch": epoch,
-            "test_nll": test_nll,
-            "test_atom_kl": atom_kl,
-            "test_edge_kl": edge_kl,
-        }
-        with open(self.path, "a", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=row.keys())
-            if not self._header_written:
-                w.writeheader()
-                self._header_written = True
-            w.writerow(row)
+    def _finalize_parse_and_write(self):
+        """캡처 파일을 파싱해 test_metrics.csv와 sampling_metrics_pre_custom.csv를 기록(있으면 건너뜀)."""
+        self._init_dir(getattr(self, "_trainer_ref", None) or type("T", (), {"loggers": [], "logger": None}))  # 안전 폴백
+        cap_path = self._log_dir / "test_stdout_capture.log"
+
+        # (A) Epoch/Test NLL·KL (이미 썼다면 생략)
+        row = self._parse_from_capture(cap_path)
+        if row and self._csv_path is not None:
+            need_header = not self._csv_path.exists()
+            with open(self._csv_path, "a", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=["epoch", "test_nll", "test_atom_kl", "test_edge_kl"])
+                if need_header: w.writeheader()
+                w.writerow(row)
+
+        # (B) pre-custom sampling metrics
+        blocks = _parse_sampling_blocks_from_capture(cap_path)
+        if blocks:
+            out_csv2 = self._log_dir / "sampling_metrics_pre_custom.csv"
+            need_header2 = not out_csv2.exists()
+            with open(out_csv2, "a", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=_SAMPLING_HEADERS)
+                if need_header2: w.writeheader()
+                for b in blocks:
+                    # 누락 키는 빈칸으로
+                    row2 = {k: b.get(k, "") for k in _SAMPLING_HEADERS}
+                    w.writerow(row2)
+            print(f"[OK] saved sampling metrics(pre-custom) → {out_csv2}")
+
+    # Lightning이 콜백에 trainer를 안 넘겨주는 훅에서 사용하기 위함
+    def setup(self, trainer, pl_module, stage: Optional[str] = None):
+        self._trainer_ref = trainer
+
+    def on_exception(self, trainer, pl_module, _):
+        # 테스트 중간에 예외가 나도 rank0에서 캡처 파일까지는 남았으니 여기서 저장
+        if trainer.is_global_zero:
+            self._finalize_parse_and_write()
+
+class TrainCaptureCSVCallback(Callback):
+    def __init__(self,
+                 metrics_filename="train_metrics.csv",
+                 sampling_filename="train_sampling_metrics_pre_custom.csv"):
+        super().__init__()
+        self.metrics_filename = metrics_filename
+        self.sampling_filename = sampling_filename
+        self._log_dir: Optional[Path] = None
+        self._tee: Optional[_StdoutTee] = None
+        self._initialized = False
+
+    def _init_dir(self, trainer):
+        if self._initialized:
+            return
+        # CSVLogger 경로 얻기 (TestMetricsCSVCallback과 동일)
+        loggers = getattr(trainer, "loggers", None) or ([trainer.logger] if getattr(trainer, "logger", None) else [])
+        if not isinstance(loggers, (list, tuple)):
+            loggers = [loggers]
+        for lg in loggers:
+            if isinstance(lg, CSVLogger):
+                self._log_dir = Path(lg.log_dir)  # .../pl_logs/version_0
+                break
+        if self._log_dir is None:
+            # 폴백: 현재 작업 디렉토리 기준으로 생성
+            self._log_dir = Path(os.getcwd()) / "pl_logs" / "version_0"
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._initialized = True
+
+    def on_fit_start(self, trainer, pl_module):
+        if not trainer.is_global_zero:
+            return
+        self._init_dir(trainer)
+        cap = self._log_dir / "train_stdout_capture.log"
+        self._tee = _StdoutTee(sys.stdout, cap)
+        sys.stdout = self._tee
+
+    def on_fit_end(self, trainer, pl_module):
+        if not trainer.is_global_zero:
+            return
+        # stdout 복구
+        if self._tee is not None:
+            sys.stdout = self._tee.real
+            self._tee.close()
+            self._tee = None
+
+        cap = self._log_dir / "train_stdout_capture.log"
+
+        # (1) on_train_end에서 출력한 "Final Train NLL ... KL ..." 파싱 → CSV
+        _PAT_TRAIN = re.compile(
+            rf"Final\s+Train\s+NLL\s+({_FLOAT}).*?Atom.*?KL\s+({_FLOAT}).*?Edge.*?KL[: ]\s*({_FLOAT})",
+            re.IGNORECASE
+        )
+        last = None
+        try:
+            with open(cap, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    m = _PAT_TRAIN.search(line)
+                    if m:
+                        last = {
+                            "train_nll": float(m.group(1)),
+                            "train_atom_kl": float(m.group(2)),
+                            "train_edge_kl": float(m.group(3)),
+                        }
+        except FileNotFoundError:
+            last = None
+
+        if last:
+            out = self._log_dir / self.metrics_filename
+            write_header = not out.exists()
+            with open(out, "a", newline="") as g:
+                w = csv.DictWriter(g, fieldnames=["train_nll","train_atom_kl","train_edge_kl"])
+                if write_header: w.writeheader()
+                w.writerow(last)
+
+        # (2) Validity/Uniq/Novelty 블록 → train 전용 CSV
+        blocks = _parse_sampling_blocks_from_capture(cap)
+        if blocks:
+            out2 = self._log_dir / self.sampling_filename
+            need_header = not out2.exists()
+            with open(out2, "a", newline="") as g:
+                w = csv.DictWriter(g, fieldnames=_SAMPLING_HEADERS)
+                if need_header: w.writeheader()
+                for b in blocks:
+                    row = {k: b.get(k, "") for k in _SAMPLING_HEADERS}
+                    w.writerow(row)
+            print(f"[OK] saved train sampling metrics(pre-custom) → {out2}")
+
+# CSV 헤더(항상 이 순서로 기록)
+_SAMPLING_HEADERS = [
+    "seq",
+    "validity_n","validity_pct",
+    "conn_n","conn_min","conn_mean","conn_max",
+    "relaxed_validity_n","relaxed_validity_pct",
+    "uniq_n_valid","uniq_pct",
+    "nov_n_unique_valid","nov_pct",
+]
+
+_PAT_STABILITY = re.compile(r"Stability metrics:.*?\[([^\]]+)\]", re.IGNORECASE)
+
+def _parse_sampling_blocks_from_capture(path: Path) -> list[dict]:
+    """
+    stdout에서 pre-custom 샘플링 메트릭(Validity/Conn/Relaxed/Uniq/Nov)만 튼튼하게 파싱.
+    - \r → \n, ANSI 제거
+    - 'Generated graphs Saved. Computing sampling metrics...' 를 기준으로 청크 분리
+    - 각 청크에서 값 추출. 누락되면 'Stability metrics: [...]' 라인으로 폴백 보완
+    """
+    if not path.exists():
+        return []
+
+    # 1) 정규화
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)   # ANSI color 제거
+    text = text.replace("\r", "\n")              # tqdm 한 줄 갱신을 줄바꿈으로
+
+    # 2) 샘플링 청크 분리
+    chunks = re.split(r"Generated graphs Saved\. Computing sampling metrics\.\s*", text)
+    chunks = chunks[1:]  # 첫 블록은 마커 이전이므로 제거
+
+    blocks: list[dict] = []
+    for ch in chunks:
+        # pre-custom 부분만 남김 (custom 시작 전까지)
+        ch_precustom = re.split(r"Starting custom metrics", ch, maxsplit=1)[0]
+
+        cur: dict = {}
+
+        # (a) 직접 매칭
+        m = _PAT_VALID.search(ch_precustom)
+        if m:
+            cur["validity_n"]   = int(m.group(1))
+            cur["validity_pct"] = float(m.group(2))
+
+        m = _PAT_CONN.search(ch_precustom)
+        if m:
+            cur["conn_n"]   = int(m.group(1))
+            cur["conn_min"] = float(m.group(2))
+            cur["conn_mean"]= float(m.group(3))
+            cur["conn_max"] = float(m.group(4))
+
+        m = _PAT_REL_VALID.search(ch_precustom)
+        if m:
+            cur["relaxed_validity_n"]   = int(m.group(1))
+            cur["relaxed_validity_pct"] = float(m.group(2))
+
+        m = _PAT_UNIQ.search(ch_precustom)
+        if m:
+            cur["uniq_n_valid"] = int(m.group(1))
+            cur["uniq_pct"]     = float(m.group(2))
+
+        m = _PAT_NOV.search(ch_precustom)
+        if m:
+            cur["nov_n_unique_valid"] = int(m.group(1))
+            cur["nov_pct"]            = float(m.group(2))
+
+        # (b) 폴백: Validity 라인이 특수한 이유로 인식이 안되면 Stability metrics에서 보완
+        if ("validity_pct" not in cur) or ("validity_n" not in cur):
+            ms = _PAT_STABILITY.search(ch_precustom)
+            # Stability metrics: [valid, relaxed, uniq, nov]  (0~1 범위)
+            if ms:
+                try:
+                    vals = [float(x.strip()) for x in ms.group(1).split(",")]
+                    if len(vals) >= 1:
+                        cur["validity_pct"] = round(vals[0] * 100, 2)
+                    # n은 conn_n과 동일하므로 있으면 재사용, 없으면 uniq/relaxed n 중 하나로 보정
+                    if "validity_n" not in cur:
+                        if "conn_n" in cur:
+                            cur["validity_n"] = cur["conn_n"]
+                        elif "relaxed_validity_n" in cur:
+                            cur["validity_n"] = cur["relaxed_validity_n"]
+                except Exception:
+                    pass
+
+        if cur:
+            blocks.append(cur)
+
+    # 3) 일련번호(seq)
+    for i, b in enumerate(blocks, 1):
+        b["seq"] = i
+    return blocks
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 유틸: 장치 해석
@@ -182,42 +480,57 @@ def to_digress_edge5(data):
     return data
 
 # ─────────────────────────────────────────────────────────────────────────────
-# (D) resume helpers (기존 main과 동일)
 def get_resume(cfg, model_kwargs):
     saved_cfg = cfg.copy()
-    name = cfg.general.name + '_resume'
-    resume = cfg.general.test_only
-    if cfg.model.type == 'discrete':
-        model = DiscreteDenoisingDiffusion.load_from_checkpoint(resume, **model_kwargs)
-    else:
-        model = LiftedDenoisingDiffusion.load_from_checkpoint(resume, **model_kwargs)
-    cfg = model.cfg
-    cfg.general.test_only = resume
-    cfg.general.name = name
+    # test_only 경로는 그대로 두되 이름만 조정
+    cfg.general.name = cfg.general.name + '_resume'
     cfg = utils.update_config_with_new_keys(cfg, saved_cfg)
-    return cfg, model
-
+    return cfg, None
 
 def get_resume_adaptive(cfg, model_kwargs):
     saved_cfg = cfg.copy()
-    current_path = os.path.dirname(os.path.realpath(__file__))
-    root_dir = current_path.split('outputs')[0]
-    resume_path = os.path.join(root_dir, cfg.general.resume)
+    # resume 경로 절대화(있으면)
+    if cfg.general.resume:
+        current_path = os.path.dirname(os.path.realpath(__file__))
+        root_dir = current_path.split('outputs')[0]
+        cfg.general.resume = os.path.join(root_dir, cfg.general.resume)
 
-    if cfg.model.type == 'discrete':
-        model = DiscreteDenoisingDiffusion.load_from_checkpoint(resume_path, **model_kwargs)
-    else:
-        model = LiftedDenoisingDiffusion.load_from_checkpoint(resume_path, **model_kwargs)
-    new_cfg = model.cfg
+    # 여기서는 모델 로드 금지(로드하면 shape mismatch로 터짐)
+    cfg.general.name = cfg.general.name + '_resume'
+    cfg = utils.update_config_with_new_keys(cfg, saved_cfg)
+    return cfg, None
 
-    for category in cfg:
-        for arg in cfg[category]:
-            new_cfg[category][arg] = cfg[category][arg]
+def _find_hydra_run_dir_by_name(outputs_root: Path, run_name: str) -> Optional[Path]:
+    """
+    Hydra 기본 구조: outputs/YYYY-MM-DD/HH-MM-SS-<run_name>/
+    같은 이름(run_name)을 가진 가장 최신 런 디렉토리를 돌려준다.
+    """
+    if not outputs_root.exists():
+        return None
+    # "*-<run_name>" 패턴으로 재귀 탐색
+    cands = [p for p in outputs_root.rglob(f"*-{run_name}") if p.is_dir()]
+    if not cands:
+        return None
+    return max(cands, key=lambda p: p.stat().st_mtime)
 
-    new_cfg.general.resume = resume_path
-    new_cfg.general.name = new_cfg.general.name + '_resume'
-    new_cfg = utils.update_config_with_new_keys(new_cfg, saved_cfg)
-    return new_cfg, model
+def _copy_to_pl_logs(outputs_root: Path, run_name: str, src: Path, dst_name: Optional[str] = None) -> Optional[Path]:
+    """
+    src 파일을 해당 run_name의 pl_logs/version_0/ 아래로 복사.
+    """
+    run_dir = _find_hydra_run_dir_by_name(outputs_root, run_name)
+    if not run_dir:
+        print(f"[WARN] hydra run dir not found for name={run_name} under {outputs_root}")
+        return None
+    pl_dir = run_dir / "pl_logs" / "version_0"
+    pl_dir.mkdir(parents=True, exist_ok=True)
+    dst = pl_dir / (dst_name or src.name)
+    try:
+        shutil.copy2(src, dst)
+        print(f"[OK] copied {src.name} → {dst}")
+        return dst
+    except Exception as e:
+        print(f"[WARN] failed to copy {src} to {dst}: {e}")
+        return None
 
 # ─────────────────────────────────────────────────────────────────────────────
 @hydra.main(version_base='1.3', config_path='../configs', config_name='config')
@@ -313,6 +626,60 @@ def main(cfg: DictConfig):
     model = DiscreteDenoisingDiffusion(cfg=cfg, **model_kwargs) if cfg.model.type == 'discrete' \
             else LiftedDenoisingDiffusion(cfg=cfg, **model_kwargs)
 
+    ckpt_for_fit = None
+
+    def _load_weights_flex(model, ckpt_path):
+        import torch
+        try:
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        except TypeError:
+            # (구버전 Torch는 weights_only 인자를 모를 수 있음)
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+        # 옵티마이저/루프가 있으면 완전 재개 가능
+        has_optimizer = (
+                isinstance(ckpt, dict)
+                and "optimizer_states" in ckpt
+                and ckpt["optimizer_states"] is not None
+                and (not isinstance(ckpt["optimizer_states"], (list, tuple)) or len(ckpt["optimizer_states"]) > 0)
+        )
+
+        if has_optimizer:
+            # 완전 재개는 Lightning에 맡김(ckpt_path로 fit에 넘김)
+            return ckpt_path, None
+        else:
+            qprint(f"[resume] no optimizer state in ckpt → weights-only transfer load: {ckpt_path}")
+
+        rank = int(os.environ.get("LOCAL_RANK", "0"))
+        qprint(f"[resume] rank{rank} → ckpt_for_fit={ckpt_for_fit}")
+
+        # weights-only → 가중치만 부분 로드
+        sd = ckpt.get("state_dict", ckpt)
+
+        # 1) 데이터셋 따라 달라지는 통계 버퍼/로그는 무조건 스킵
+        DROP_PREFIXES = ("sampling_metrics.", "train_metrics.")
+        sd = {k: v for k, v in sd.items() if not k.startswith(DROP_PREFIXES)}
+
+        # 2) 1차 시도
+        try:
+            missing, unexpected = model.load_state_dict(sd, strict=False)
+            qprint("[resume] weights-only loaded with strict=False",
+                   "\n  missing:", missing, "\n  unexpected:", unexpected)
+        except RuntimeError as e:
+            # 3) y 차원 바뀐 경우 헤드(mlp_in_y)만 제외하고 재시도
+            qprint("[resume] retrying without model.mlp_in_y.* due to:", e)
+            sd2 = {k: v for k, v in sd.items() if not k.startswith("model.mlp_in_y.")}
+            missing, unexpected = model.load_state_dict(sd2, strict=False)
+            qprint("[resume] reloaded without mlp_in_y.*",
+                   "\n  missing:", missing, "\n  unexpected:", unexpected)
+
+        # weights만 올렸으므로 fit/test에 ckpt_path는 넘기지 않음
+        return None, None
+
+    # resume 또는 test_only 경로가 있으면 불러오기
+    ckpt_input = cfg.general.resume or cfg.general.test_only
+    if ckpt_input:
+        ckpt_for_fit, _ = _load_weights_flex(model, ckpt_input)
+
     callbacks = []
     if cfg.train.save_model:
         periodic_ckpt = ModelCheckpoint(
@@ -340,7 +707,8 @@ def main(cfg: DictConfig):
             every_n_epochs=1
         )
         callbacks += [best_ckpt, periodic_ckpt, last_cb]
-        callbacks.append(TestMetricsCSVCallback(out_dir="pl_logs", filename="test_metrics.csv"))
+        callbacks.append(TestMetricsCSVCallback(filename="test_metrics.csv"))
+        callbacks.append(TrainCaptureCSVCallback())
 
     if cfg.train.ema_decay > 0:
         callbacks.append(utils.EMA(decay=cfg.train.ema_decay))
@@ -352,21 +720,25 @@ def main(cfg: DictConfig):
 
     # ── (4) fit/test ────────────────────────────────────────────────────────
     if not cfg.general.test_only:
-        trainer.fit(model, datamodule=dm, ckpt_path=cfg.general.resume)
+        # 재개 가능하면 ckpt_for_fit=경로, 아니면 None(트랜스퍼)
+        trainer.fit(model, datamodule=dm, ckpt_path=ckpt_for_fit)
         if cfg.general.name not in ['debug', 'test']:
-            trainer.test(model, datamodule=dm)
+            trainer.test(model, datamodule=dm)  # ← ckpt_path 전달 금지
     else:
-        trainer.test(model, datamodule=dm, ckpt_path=cfg.general.test_only)
+        # test-only: 위에서 이미 가중치 주입했으므로 ckpt_path 없이 테스트
+        trainer.test(model, datamodule=dm)  # ← ckpt_path 전달 금지
+
+        # (옵션) 여러 ckpt를 순회 평가하고 싶다면, 각 ckpt를 수동 주입 후 test 호출
         if cfg.general.evaluate_all_checkpoints:
             directory = pathlib.Path(cfg.general.test_only).parents[0]
             print("Directory:", directory)
             for file in os.listdir(directory):
                 if file.endswith('.ckpt'):
                     ckpt_path = os.path.join(directory, file)
-                    if ckpt_path == cfg.general.test_only:
-                        continue
-                    print("Loading checkpoint", ckpt_path)
-                    trainer.test(model, datamodule=dm, ckpt_path=ckpt_path)
+                    print("Loading checkpoint (weights-only test)", ckpt_path)
+                    # 동일 모델에 가중치만 다시 주입
+                    _ckpt_fit, _ = _load_weights_flex(model, ckpt_path)
+                    trainer.test(model, datamodule=dm)
 
 
 if __name__ == '__main__':

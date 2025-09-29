@@ -13,11 +13,15 @@ spectrum_start: 200
 spectrum_end: 800
 
 # 전역 조건 컬럼들 (csv_spectrum_dataset.py가 사용)
-global_cols: ["solvent_phase","pH_label","dielectric_constant_avg","is_qm"]
+global_cols: ["pH_label","dielectric_constant_avg","is_qm"] # "solvent_phase"
+
 
 # 옵션
 spectrum_fill_eps: 1.0e-8
-fixed_vocabs: {}          # 필요시 {열이름: [v1,v2,...]} 로 명시 가능
-boolean_cols: []          # 0/1로 수동 처리할 컬럼명 리스트
+fixed_vocabs: {pH_label: ["neutral", "basic", "acidic"]}          # 필요시 {열이름: [v1,v2,...]} 로 명시 가능
+
+boolean_cols: ["is_qm"]
+numeric_cols: ["dielectric_constant_avg"]   # (원래 자동 감지되면 생략 가능)
+categorical_cols: [ "pH_label"] # "solvent_phase",
 remove_h: true           # RDKit에서 H 제거 여부
 add_h: false              # H 추가하여 그래프화할지 여부

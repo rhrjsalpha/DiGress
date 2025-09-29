@@ -245,6 +245,7 @@ class LiftedDenoisingDiffusion(pl.LightningModule):
 
     def on_test_epoch_end(self) -> None:
         """ Measure likelihood on a test set and compute stability metrics. """
+
         metrics = [self.test_nll.compute(), self.test_X_mse.compute(), self.test_E_mse.compute(),
                    self.test_y_mse.compute(), self.test_X_logp.compute(), self.test_E_logp.compute(),
                    self.test_y_logp.compute()]
@@ -277,6 +278,9 @@ class LiftedDenoisingDiffusion(pl.LightningModule):
         samples = []
         id = 0
         while samples_left_to_generate > 0:
+            self.print(f"samples_left_to_generate = {samples_left_to_generate}")
+            self.print(f"samples_left_to_save     = {samples_left_to_save}")
+            self.print(f"chains_left_to_save      = {chains_left_to_save}")
             bs = 2 * self.cfg.train.batch_size
             to_generate = min(samples_left_to_generate, bs)
             to_save = min(samples_left_to_save, bs)

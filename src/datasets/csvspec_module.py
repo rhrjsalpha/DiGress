@@ -160,6 +160,31 @@ def _save_unk_viz(mol, out_dir: Path, ridx: int, smiles: str, unk_syms: list[str
     Draw.MolToFile(mol, str(out_dir / fname), size=(500, 400), highlightAtoms=unk_idx, legend=legend)
     return fname
 
+def _canon_str(x):
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return ""
+    return str(x).strip()
+
+def _canon_cat(x):
+    s = _canon_str(x).lower()  # 소문자 + 공백제거
+    # pH_label 표준화
+    if s in {"neutral", "neu"}:
+        s = "neutral"
+    elif s in {"basic", "base", "alkaline"}:
+        s = "basic"
+    elif s in {"acidic", "acid"}:
+        s = "acidic"
+    # solvent_phase 표준화
+    if s in {"g", "gas"}:
+        s = "gas"
+    elif s in {"l", "liq", "liquid"}:
+        s = "liquid"
+    elif s in {"s", "sol", "solid"}:
+        s = "solid"
+    elif s in {"qm", "quantum", "calc"}:
+        s = "QM"
+    return s
+
 class CSVSpecDataset_for_Diffusion(InMemoryDataset):
     """
     CSV → Graph + Spectrum(y) + Optional Global Condition(뒤에 concat)
@@ -383,7 +408,8 @@ class CSVSpecDataset_for_Diffusion(InMemoryDataset):
                 sd = float(np.nanstd(v) + 1e-12)
                 stats["numeric"][col] = {"mean": m, "std": sd}
             else:
-                cats = sorted([str(x) for x in s.dropna().unique().tolist()])
+                s_norm = s.dropna().apply(_canon_cat)
+                cats = sorted([str(x) for x in s_norm.unique().tolist()])
                 stats["categorical"][col] = {"vocab": cats}
         return stats
 
@@ -416,7 +442,7 @@ class CSVSpecDataset_for_Diffusion(InMemoryDataset):
             # 3) 범주형 one-hot (고정 vocab 포함)
             if "categorical" in stats and col in stats["categorical"]:
                 vocab = stats["categorical"][col]["vocab"]
-                token = str(val) if pd.notna(val) else ""
+                token = _canon_cat(val) if pd.notna(val) else ""
                 outs += [1.0 if token == v else 0.0 for v in vocab]
                 continue
 

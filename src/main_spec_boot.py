@@ -39,7 +39,7 @@ USE_INLINE_SETTINGS = True
 # 기본 공통 값
 DATASET_NAME   = "csvspec"
 GENERAL_GPUS   = 3
-N_EPOCHS       = 100
+N_EPOCHS       = 1000
 FINAL_SAMPLES  = 100
 
 # (선택) 외부 test CSV를 쓰지 않으려면 아래 TEST_CSV를 None으로 두세요.
@@ -63,7 +63,7 @@ COMMON_SETTINGS = dict(
     bootstrap_trials=1000,
     bootstrap_size=1.0,
     with_replacement=True,
-    seed=100,
+    seed=10,
     stratify_by="pH_label,type,Solvent",
     stratified_bootstrap=True,
     min_test_size=1,
@@ -74,7 +74,7 @@ COMMON_SETTINGS = dict(
     level_check_mode="warn",           # off | warn | hard
     level_check_ignore="",
 
-    smoke_epochs=1,
+    smoke_epochs=5,
     log_smoke=False,
     keep_failed_trials=True,
 )
@@ -109,13 +109,13 @@ EXTRA_OVERRIDES_SMOKE: list[str] = [
     f"general.gpus={GENERAL_GPUS}",
 
     # ↓↓↓ 스모크에서만 시각화/샘플 생성 최소화 ↓↓↓
-    "general.samples_to_generate=1",  # 배치마다 샘플 생성 X
+    "general.samples_to_generate=512",  # 배치마다 샘플 생성 X
     "general.samples_to_save=1",  # 샘플 이미지/파일 저장 X
     "general.chains_to_save=1",  # 체인 GIF 저장 X
     "general.number_chain_steps=1",  # 혹시 체인을 그려도 1 step
 
     # 파이널용 키도 스모크에선 0으로 (혹시 트리거되더라도 무해)
-    "general.final_model_samples_to_generate=10",
+    "general.final_model_samples_to_generate=10000",
     "general.final_model_samples_to_save=1",
     "general.final_model_chains_to_save=1",
 ]
@@ -485,6 +485,12 @@ def _search_safe_needed(a, df: pd.DataFrame, main_spec: Path, out_root: Path,
         train_df.to_csv(f_train, index=False)
         test_df.to_csv(f_test,  index=False)
 
+        # ★ 여기서 n_test 계산
+        try:
+            n_test = pd.read_csv(test_arg).shape[0]
+        except Exception:
+            n_test = len(test_df)  # fallback
+
         # 스모크 호출: val=null, test=external 우선(없으면 OOB)
         extra_over = _split_overrides(getattr(a, "extra_overrides_smoke", None))
         test_arg = str(ext_test_csv) if ext_test_csv else str(f_test)
@@ -495,6 +501,11 @@ def _search_safe_needed(a, df: pd.DataFrame, main_spec: Path, out_root: Path,
             f"general.name={a.name_prefix}_SMOKE_trial{trials:04d}",
             "train.num_workers=0",
             f"train.n_epochs={a.smoke_epochs}",
+            # ★ 스모크에서 '생성량 = 테스트셋 크기'
+            #f"general.final_model_samples_to_generate={n_test}",
+            ## 저장/체인은 0으로 (위 EXTRA_OVERRIDES_SMOKE에서도 0이지만, 명시적으로 한 번 더)
+            #f"general.final_model_samples_to_save={n_test}",
+            #f"general.final_model_chains_to_save={n_test}",
             *extra_over,
         ]
         os.environ["SMOKE_VIS_MAX"] = "2"  # 0이면 완전 비활성, 2면 최대 2개만 그림

@@ -15,6 +15,7 @@ from metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL
 from src import utils
 from rdkit import Chem
 import inspect
+from contextlib import contextmanager
 
 class DiscreteDenoisingDiffusion(pl.LightningModule):
     def __init__(self, cfg, dataset_infos, train_metrics, sampling_metrics, visualization_tools, extra_features,
@@ -41,6 +42,12 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         self.dataset_info = dataset_infos
 
         self.train_loss = TrainLossDiscrete(self.cfg.model.lambda_train, y_loss_mode)
+
+        self.trainfinal_nll = NLL()
+        self.trainfinal_X_kl = SumExceptBatchKL()
+        self.trainfinal_E_kl = SumExceptBatchKL()
+        self.trainfinal_X_logp = SumExceptBatchMetric()
+        self.trainfinal_E_logp = SumExceptBatchMetric()
 
         self.val_nll = NLL()
         self.val_X_kl = SumExceptBatchKL()
@@ -101,6 +108,10 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         self.best_val_nll = 1e8
         self.val_counter = 0
 
+        self._train_condY = []
+        self._collect_train_cond = False
+        self._train_cond_max = int(getattr(self.cfg.general, "train_cond_cache_max", 8192))
+
     def training_step(self, data, i):
         if data.edge_index.numel() == 0:
             self.print("Found a batch with no edges. Skipping.")
@@ -119,6 +130,76 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         self.train_metrics(masked_pred_X=pred.X, masked_pred_E=pred.E, true_X=X, true_E=E,
                            log=i % self.log_every_steps == 0)
 
+        if self._collect_train_cond:
+            y_cpu = data.y.detach().to("cpu")
+            self._train_condY.append(y_cpu)
+            # (옵션) 캐시 상한 적용: 앞에서부터 잘라냄
+            total = sum(t.shape[0] for t in self._train_condY)
+            if total > self._train_cond_max:
+                # 앞쪽부터 덜어내기
+                need_drop = total - self._train_cond_max
+                new_buf = []
+                for t in self._train_condY:
+                    if need_drop <= 0:
+                        new_buf.append(t)
+                    else:
+                        if t.shape[0] <= need_drop:
+                            need_drop -= t.shape[0]
+                        else:
+                            new_buf.append(t[need_drop:])
+                            need_drop = 0
+                self._train_condY = new_buf
+
+            with torch.no_grad():
+                # posterior 계산 준비
+                pred_probs_X = F.softmax(pred.X, dim=-1)
+                pred_probs_E = F.softmax(pred.E, dim=-1)
+                pred_probs_y = F.softmax(pred.y, dim=-1)
+
+                Qtb = self.transition_model.get_Qt_bar(noisy_data['alpha_t_bar'], self.device)
+                Qsb = self.transition_model.get_Qt_bar(noisy_data['alpha_s_bar'], self.device)
+                Qt = self.transition_model.get_Qt(noisy_data['beta_t'], self.device)
+
+                bs, n, _ = X.shape
+                prob_true = diffusion_utils.posterior_distributions(
+                    X=X, E=E, y=data.y,
+                    X_t=noisy_data['X_t'], E_t=noisy_data['E_t'], y_t=noisy_data['y_t'],
+                    Qt=Qt, Qsb=Qsb, Qtb=Qtb
+                )
+                prob_true.E = prob_true.E.reshape(bs, n, n, -1)
+
+                prob_pred = diffusion_utils.posterior_distributions(
+                    X=pred_probs_X, E=pred_probs_E, y=pred_probs_y,
+                    X_t=noisy_data['X_t'], E_t=noisy_data['E_t'], y_t=noisy_data['y_t'],
+                    Qt=Qt, Qsb=Qsb, Qtb=Qtb
+                )
+                prob_pred.E = prob_pred.E.reshape(bs, n, n, -1)
+
+                # 마스크 적용
+                ptX, ptE, ppX, ppE = diffusion_utils.mask_distributions(
+                    true_X=prob_true.X, true_E=prob_true.E,
+                    pred_X=prob_pred.X, pred_E=prob_pred.E,
+                    node_mask=node_mask
+                )
+
+                # ★ Train-최종용 KL 메트릭 state 업데이트
+                kl_x = self.trainfinal_X_kl(ptX, torch.log(ppX))
+                kl_e = self.trainfinal_E_kl(ptE, torch.log(ppE))
+                Lt = self.T * (kl_x + kl_e)
+
+                # ★ Train-최종용 L0 항 업데이트
+                prob0 = self.reconstruction_logp(noisy_data['t'], X, E, data.y, node_mask)
+                l0 = self.trainfinal_X_logp(X * prob0.X.log()) + self.trainfinal_E_logp(E * prob0.E.log())
+
+                # 나머지 항
+                N = node_mask.sum(1).long()
+                log_pN = self.node_dist.log_prob(N)
+                kl_p = self.kl_prior(X, E, node_mask)
+
+                # ★ NLL state 업데이트
+                nlls = -log_pN + kl_p + Lt - l0
+                self.trainfinal_nll(nlls)
+
         return {'loss': loss}
 
     def configure_optimizers(self):
@@ -136,6 +217,11 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         self.start_epoch_time = time.time()
         self.train_loss.reset()
         self.train_metrics.reset()
+        # --- ★ 마지막 epoch이면 cond_y 수집 ON ---
+        max_epochs = getattr(self.trainer, "max_epochs", None)
+        self._collect_train_cond = (max_epochs is not None) and (self.current_epoch == max_epochs - 1)
+        if self._collect_train_cond:
+            self._train_condY = []  # 매 run마다 초기화
 
     def on_train_epoch_end(self) -> None:
         to_log = self.train_loss.log_epoch_metrics()
@@ -224,8 +310,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 samples_left_to_generate -= to_generate
                 chains_left_to_save -= chains_save
             self.print("Computing sampling metrics...")
-            self.sampling_metrics.forward(samples, self.name, self.current_epoch, val_counter=-1, test=False,
-                                          local_rank=self.local_rank)
+            # self.sampling_metrics.forward(samples, self.name, self.current_epoch, val_counter=-1, test=False, local_rank=self.local_rank)
             self.print(f'Done. Sampling took {time.time() - start:.2f} seconds\n')
             print("Validation epoch end ends...")
 
@@ -289,6 +374,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
     def on_test_epoch_end(self) -> None:
         """ Measure likelihood on a test set and compute stability metrics. """
+        self.print('on_test_epoch_end')
         metrics = [self.test_nll.compute(), self.test_X_kl.compute(), self.test_E_kl.compute(),
                    self.test_X_logp.compute(), self.test_E_logp.compute()]
         if wandb.run:
@@ -384,6 +470,136 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         self.sampling_metrics(samples, self.name, self.current_epoch, self.val_counter, test=True, local_rank=self.local_rank)
         self.print("Done testing.")
 
+    def on_train_end(self) -> None:
+        """
+        Training 종료 후: 훈련셋에서 모은 cond_y(_train_condY)를 사용해
+        on_test_epoch_end와 동일한 방식으로 샘플 생성/저장/샘플링 메트릭 계산을 수행.
+        - DDP 안전: rank0만 샘플링/시각화/파일저장 실행, 전후 barrier로 동기화
+        - torchmetrics compute()는 호출하지 않음(학습 중 update를 안해서 경고 방지)
+        """
+        # ---- DDP 동기화(collective 끝난 시점) ----
+        print('on_train_end')
+        try:
+            if getattr(self.trainer, "world_size", 1) > 1:
+                self.trainer.strategy.barrier("train_end_before_sampling")
+        except Exception:
+            pass
+
+        # ---- 훈련 cond_y 캐시 확인 ----
+        if not hasattr(self, "_train_condY") or len(self._train_condY) == 0:
+            self.print("[on_train_end] 수집된 train cond_y가 없습니다. 마지막 epoch에서 수집되도록 확인하세요. 샘플링을 생략합니다.")
+            return
+
+        if self._collect_train_cond:
+            train_metrics = [
+                self.trainfinal_nll.compute(),
+                self.trainfinal_X_kl.compute(),
+                self.trainfinal_E_kl.compute(),
+                self.trainfinal_X_logp.compute(),
+                self.trainfinal_E_logp.compute(),
+            ]
+            print(
+                f"Final Train NLL {train_metrics[0]:.2f} -- "
+                f"Train Atom type KL {train_metrics[1]:.2f} -- "
+                f"Train Edge type KL: {train_metrics[2]:.2f} \n"
+            )
+            if wandb.run:
+                wandb.log({
+                    "train/final_epoch_NLL": train_metrics[0],
+                    "train/final_X_kl": train_metrics[1],
+                    "train/final_E_kl": train_metrics[2],
+                    "train/final_X_logp": train_metrics[3],
+                    "train/final_E_logp": train_metrics[4],
+                }, commit=False)
+
+            # 다음 실행을 위해 리셋
+            for m in [self.trainfinal_nll, self.trainfinal_X_kl, self.trainfinal_E_kl,
+                      self.trainfinal_X_logp, self.trainfinal_E_logp]:
+                m.reset()
+
+        # ---- rank0만 샘플링/시각화/파일저장 ----
+        if getattr(self.trainer, "is_global_zero", True):
+            condY_all = torch.cat(self._train_condY, dim=0)  # [N_train_collected, 607]
+            samples_left_to_generate = int(self.cfg.general.final_model_samples_to_generate)
+            samples_left_to_save = int(self.cfg.general.final_model_samples_to_save)
+            chains_left_to_save = int(self.cfg.general.final_model_chains_to_save)
+
+            samples = []
+            bid = 0
+            while samples_left_to_generate > 0:
+                self.print(f'Samples left to generate: {samples_left_to_generate}/'
+                           f'{self.cfg.general.final_model_samples_to_generate}', end='')
+                bs = 2 * int(self.cfg.train.batch_size)
+                to_generate = min(samples_left_to_generate, bs)
+                to_save = min(samples_left_to_save, bs)
+                chains_save = min(chains_left_to_save, to_generate)
+
+                # --- cond_y_base slice (필요 시 순환) ---
+                if bid + to_generate <= condY_all.size(0):
+                    cond_slice = condY_all[bid:bid + to_generate]
+                else:
+                    need = to_generate
+                    chunks, pos = [], bid
+                    while need > 0:
+                        s = pos % condY_all.size(0)
+                        take = min(need, condY_all.size(0) - s)
+                        chunks.append(condY_all[s:s + take])
+                        pos += take
+                        need -= take
+                    cond_slice = torch.cat(chunks, dim=0)
+                cond_slice = cond_slice.to(self.device)  # [to_generate, 607]
+
+                # --- 샘플 생성 ---
+                samples.extend(self.sample_batch(
+                    batch_id=bid,
+                    batch_size=to_generate,
+                    keep_chain=chains_save,
+                    number_chain_steps=self.number_chain_steps,
+                    save_final=to_save,
+                    num_nodes=None,
+                    cond_y_base=cond_slice,
+                ))
+
+                bid += to_generate
+                samples_left_to_save -= to_save
+                samples_left_to_generate -= to_generate
+                chains_left_to_save -= chains_save
+
+            # --- 텍스트 저장 (기존 로직 유지) ---
+            print("Saving the generated graphs")
+            filename = f'generated_samples1.txt'
+            for i in range(2, 10):
+                if os.path.exists(filename):
+                    filename = f'generated_samples{i}.txt'
+                else:
+                    break
+            with open(filename, 'w') as f:
+                for item in samples:
+                    f.write(f"N={item[0].shape[0]}\n")
+                    atoms = item[0].tolist()
+                    f.write("X: \n")
+                    for at in atoms:
+                        f.write(f"{at} ")
+                    f.write("\n")
+                    f.write("E: \n")
+                    for bond_list in item[1]:
+                        for bond in bond_list:
+                            f.write(f"{bond} ")
+                        f.write("\n")
+                    f.write("\n")
+
+            # --- 샘플링 메트릭 (rank0 단독) ---
+            print("Generated graphs Saved. Computing sampling metrics...")
+            # test 플래그는 기존 파이프라인과 동일하게 True로 둬도 되고, 구분 원하면 False로 변경
+            self.sampling_metrics(samples, self.name, self.current_epoch, self.val_counter, test=False, local_rank=self.local_rank)
+            print("Done (train-end sampling).")
+
+        # ---- DDP 동기화(모두 대기 후 종료) ----
+        try:
+            if getattr(self.trainer, "world_size", 1) > 1:
+                self.trainer.strategy.barrier("train_end_sampling_done")
+        except Exception:
+            pass
 
     def kl_prior(self, X, E, node_mask):
         """Computes the KL between q(z1 | x) and the prior p(z1) = Normal(0, 1).
@@ -394,8 +610,9 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # Compute the last alpha value, alpha_T.
         #bs = X.size(0)
         #device = X.device
-        ones = torch.ones((X.size(0), 1), device=X.device)
-        Ts = self.T * ones
+        #ones = torch.ones((X.size(0), 1), device=X.device)
+        #Ts = self.T * ones
+        Ts = torch.full((X.size(0), 1), self.T - 1, device=X.device, dtype=torch.long)
         alpha_t_bar = self.noise_schedule.get_alpha_bar(t_int=Ts)  # (bs, 1)
 
         Qtb = self.transition_model.get_Qt_bar(alpha_t_bar, self.device)
@@ -423,7 +640,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         return diffusion_utils.sum_except_batch(kl_distance_X) + \
                diffusion_utils.sum_except_batch(kl_distance_E)
 
-    def compute_Lt(self, X, E, y, pred, noisy_data, node_mask, test):
+    def compute_Lt(self, X, E, y, pred, noisy_data, node_mask, test, metrics=None):
         pred_probs_X = F.softmax(pred.X, dim=-1)
         pred_probs_E = F.softmax(pred.E, dim=-1)
         pred_probs_y = F.softmax(pred.y, dim=-1)
@@ -432,24 +649,38 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         Qsb = self.transition_model.get_Qt_bar(noisy_data['alpha_s_bar'], self.device)
         Qt = self.transition_model.get_Qt(noisy_data['beta_t'], self.device)
 
-        # Compute distributions to compare with KL
-        bs, n, d = X.shape
-        prob_true = diffusion_utils.posterior_distributions(X=X, E=E, y=y, X_t=noisy_data['X_t'], E_t=noisy_data['E_t'],
-                                                            y_t=noisy_data['y_t'], Qt=Qt, Qsb=Qsb, Qtb=Qtb)
+        # Compute “true”/“pred” posteriors
+        bs, n, _ = X.shape
+        prob_true = diffusion_utils.posterior_distributions(
+            X=X, E=E, y=y, X_t=noisy_data['X_t'], E_t=noisy_data['E_t'], y_t=noisy_data['y_t'],
+            Qt=Qt, Qsb=Qsb, Qtb=Qtb
+        )
         prob_true.E = prob_true.E.reshape((bs, n, n, -1))
-        prob_pred = diffusion_utils.posterior_distributions(X=pred_probs_X, E=pred_probs_E, y=pred_probs_y,
-                                                            X_t=noisy_data['X_t'], E_t=noisy_data['E_t'],
-                                                            y_t=noisy_data['y_t'], Qt=Qt, Qsb=Qsb, Qtb=Qtb)
+
+        prob_pred = diffusion_utils.posterior_distributions(
+            X=pred_probs_X, E=pred_probs_E, y=pred_probs_y,
+            X_t=noisy_data['X_t'], E_t=noisy_data['E_t'], y_t=noisy_data['y_t'],
+            Qt=Qt, Qsb=Qsb, Qtb=Qtb
+        )
         prob_pred.E = prob_pred.E.reshape((bs, n, n, -1))
 
-        # Reshape and filter masked rows
-        prob_true_X, prob_true_E, prob_pred.X, prob_pred.E = diffusion_utils.mask_distributions(true_X=prob_true.X,
-                                                                                                true_E=prob_true.E,
-                                                                                                pred_X=prob_pred.X,
-                                                                                                pred_E=prob_pred.E,
-                                                                                                node_mask=node_mask)
-        kl_x = (self.test_X_kl if test else self.val_X_kl)(prob_true.X, torch.log(prob_pred.X))
-        kl_e = (self.test_E_kl if test else self.val_E_kl)(prob_true.E, torch.log(prob_pred.E))
+        # Masked versions (반드시 이 마스크된 텐서들로 KL을 계산)
+        prob_true_X, prob_true_E, prob_pred_X, prob_pred_E = diffusion_utils.mask_distributions(
+            true_X=prob_true.X, true_E=prob_true.E,
+            pred_X=prob_pred.X, pred_E=prob_pred.E,
+            node_mask=node_mask
+        )
+
+        # 어떤 metric 객체를 쓸지 선택: 전달되면 사용, 없으면 기존 val/test 메트릭
+        if metrics is None:
+            x_metric = self.test_X_kl if test else self.val_X_kl
+            e_metric = self.test_E_kl if test else self.val_E_kl
+        else:
+            x_metric, e_metric = metrics
+
+        kl_x = x_metric(prob_true_X, torch.log(prob_pred_X))
+        kl_e = e_metric(prob_true_E, torch.log(prob_pred_E))
+
         return self.T * (kl_x + kl_e)
 
     def reconstruction_logp(self, t, X, E, y, node_mask):
@@ -782,7 +1013,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 # 샘플 생성에 실제 사용된 조건 값
                 y_i = cond_y_base[i].detach().cpu().numpy()
 
-                print(self._test_smiles)
+                # print(self._test_smiles)
                 ref_mol = None
                 if hasattr(self, "_test_smiles") and len(self._test_smiles) > 0:
                     # test 셋보다 더 많이 생성하는 경우에도 안전하게 인덱싱

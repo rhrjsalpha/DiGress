@@ -3,12 +3,12 @@ import torch
 from src import utils
 from src.diffusion import diffusion_utils
 
-def _safe_t_int_from_normalized(t_norm: torch.Tensor, length: int) -> torch.Tensor:
-    """t_norm∈[0,1] → 안전한 정수 인덱스 [0, length-1]"""
-    # float 정규화 값이 1.0에 딱 걸려도 마지막 인덱스로만 가도록 미세하게 절단
-    t_norm = torch.clamp(t_norm, 0.0, 1.0 - 1e-8)
-    t_int = torch.floor(t_norm * length).long()
-    return torch.clamp(t_int, 0, length - 1)
+def _safe_t_int_from_normalized(t_normalized: torch.Tensor, timesteps: int) -> torch.Tensor:
+    # [0,1] 클램프 후 floor, 마지막에 정수/범위 보정
+    t = torch.nan_to_num(t_normalized, nan=0.0, posinf=1.0, neginf=0.0)
+    t = torch.clamp(t, 0.0, 1.0 - 1e-8)
+    t_int = torch.floor(t * timesteps).long()
+    return t_int.clamp_(0, timesteps - 1)
 
 class PredefinedNoiseSchedule(torch.nn.Module):
     """
@@ -60,7 +60,8 @@ class PredefinedNoiseSchedule(torch.nn.Module):
             requires_grad=False)
 
     def forward(self, t):
-        t_int = torch.round(t * self.timesteps).long()
+        t_int = torch.floor(torch.clamp(t, 0.0, 1.0 - 1e-8) * self.timesteps).long()
+        t_int = torch.clamp(t_int, 0, self.timesteps - 1)
         return self.gamma[t_int]
 
 
@@ -97,15 +98,34 @@ class PredefinedNoiseScheduleDiscrete(torch.nn.Module):
     #         t_int = torch.round(t_normalized * self.timesteps)
     #     t_int = torch.clamp(t_int.long(), min=0, max=self.timesteps - 1)
     #     return self.betas[t_int.long()]
-    def forward(self, t_normalized=None, t_int=None):
+
+
+    def _sanitize_t_int(self, t_normalized=None, t_int=None):
         assert int(t_normalized is None) + int(t_int is None) == 1
         if t_int is None:
-            t_int = _safe_t_int_from_normalized(t_normalized, self.timesteps)
+            # [0,1] 클램프 → floor → [0, T-1] 클램프
+            t = torch.nan_to_num(t_normalized, nan=0.0, posinf=1.0, neginf=0.0)
+            t = torch.clamp(t, 0.0, 1.0 - 1e-8)
+            t_int = torch.floor(t * self.timesteps).long()
         else:
-            t_int = torch.clamp(t_int.long(), 0, self.timesteps - 1)
+            t_int = torch.nan_to_num(t_int, nan=0.0,posinf = float(self.timesteps - 1), neginf = 0.0).long()
+        return t_int.clamp_(0, self.timesteps - 1)
 
-        betas = self.betas.to(t_int.device)
-        return betas.index_select(0, t_int.view(-1)).view_as(t_int)  # 안전한 인덱싱
+    def forward(self, t_normalized=None, t_int=None):
+        t_int = self._sanitize_t_int(t_normalized, t_int)
+        idx = t_int.view(-1)
+        betas = self.betas.to(idx.device).gather(0, idx)
+        return betas.view_as(t_int)
+
+    #def forward(self, t_normalized=None, t_int=None):
+    #    assert int(t_normalized is None) + int(t_int is None) == 1
+    #    if t_int is None:
+    #        t_int = _safe_t_int_from_normalized(t_normalized, self.timesteps)
+    #    else:
+    #        t_int = torch.clamp(t_int.long(), 0, self.timesteps - 1)
+
+    #    betas = self.betas.to(t_int.device)
+    #    return betas.index_select(0, t_int.view(-1)).view_as(t_int)  # 안전한 인덱싱
 
     #def get_alpha_bar(self, t_normalized=None, t_int=None):
     #    assert int(t_normalized is None) + int(t_int is None) == 1
@@ -114,15 +134,26 @@ class PredefinedNoiseScheduleDiscrete(torch.nn.Module):
     #    t_int = torch.clamp(t_int.long(), min=0, max=self.timesteps - 1)
     #    # print("t_int.type",type(t_int))
     #    return self.alphas_bar.to(t_int.device)[t_int.long()]
-    def get_alpha_bar(self, t_normalized=None, t_int=None):
-        assert int(t_normalized is None) + int(t_int is None) == 1
-        if t_int is None:
-            t_int = _safe_t_int_from_normalized(t_normalized, self.timesteps)
-        else:
-            t_int = torch.clamp(t_int.long(), 0, self.timesteps - 1)
 
-        alphas_bar = self.alphas_bar.to(t_int.device)
-        return alphas_bar.index_select(0, t_int.reshape(-1)).view_as(t_int)
+    def get_alpha_bar(self, t_normalized=None, t_int=None):
+        # ① 둘 중 하나만 받기
+        assert int(t_normalized is None) + int(t_int is None) == 1
+
+        # ② 정수 시계열 만들기( NaN/Inf→치환, [0, T-1] 클램프 )
+        if t_int is None:
+            t = torch.nan_to_num(t_normalized, nan=0.0, posinf=1.0, neginf=0.0)
+            t = torch.clamp(t, 0.0, 1.0 - 1e-8)
+            t_int = torch.floor(t * self.timesteps).long()
+        else:
+            t_int = torch.nan_to_num(
+                t_int, nan=0.0, posinf=float(self.timesteps - 1), neginf=0.0
+            ).long()
+        t_int = t_int.clamp(0, self.timesteps - 1)
+
+        # ③ gather는 1D 인덱스를 요구 → 평탄화해서 뽑고, shape 복원
+        idx = t_int.view(-1)
+        alpha_bar = self.alphas_bar.to(idx.device).gather(0, idx)
+        return alpha_bar.view_as(t_int)
 
 
 class DiscreteUniformTransition:

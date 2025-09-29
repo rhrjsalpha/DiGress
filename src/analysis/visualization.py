@@ -80,7 +80,7 @@ class MolecularVisualization:
             try:
                 Draw.MolToFile(mol, file_path)
                 if wandb.run and log is not None:
-                    print(f"Saving {file_path} to wandb")
+                    # print(f"Saving {file_path} to wandb")
                     wandb.log({log: wandb.Image(file_path)}, commit=True)
             except rdkit.Chem.KekulizeException:
                 print("Can't kekulize molecule")
@@ -240,8 +240,8 @@ class MolecularVisualization:
         plt.close(fig)
 
         # wandb 로깅(선택)
-        if wandb.run and log is not None:
-            wandb.log({log: wandb.Image(out_path)}, commit=True)
+        #if wandb.run and log is not None:
+        #    wandb.log({log: wandb.Image(out_path)}, commit=True)
 
 
 class NonMolecularVisualization:

@@ -117,75 +117,109 @@ class SamplingMolecularMetrics(nn.Module):
         self.dataset_info = di
 
     def forward(self, molecules: list, name, current_epoch, val_counter, local_rank, test=False):
-        stability, rdkit_metrics, all_smiles = compute_molecular_metrics(molecules, self.train_smiles, self.dataset_info)
+        """
+        RDKit 기반 메트릭만 계산/저장:
+          - compute_molecular_metrics 내부에서 validity/uniqueness/novelty 등 콘솔 출력 발생
+          - (test & rank0) final_smiles.txt 저장
+          - (rank0) valid_unique_molecules_*.txt 저장
+          - pl_logs/rdkit_sampling_metrics.csv 누적 기록
+        """
+        # RDKit 메트릭 계산 (이 내부 print가 바로 로그에 보이는 부분입니다)
+        stability, rdkit_metrics, all_smiles = compute_molecular_metrics(
+            molecules, self.train_smiles, self.dataset_info
+        )
 
+        # 테스트 단계면 rank0에서 최종 SMILES 저장
         if test and local_rank == 0:
-            with open(r'final_smiles.txt', 'w') as fp:
-                for smiles in all_smiles:
-                    # write each item on a new line
-                    fp.write("%s\n" % smiles)
-                print('All smiles saved')
+            with open('final_smiles.txt', 'w') as fp:
+                for smi in all_smiles:
+                    fp.write(f"{smi}\n")
+            print('All smiles saved')
 
-        print("Starting custom metrics")
-        self.generated_n_dist(molecules)
-        generated_n_dist = self.generated_n_dist.compute()
-        self.n_dist_mae(generated_n_dist)
-
-        self.generated_node_dist(molecules)
-        generated_node_dist = self.generated_node_dist.compute()
-        self.node_dist_mae(generated_node_dist)
-
-        self.generated_edge_dist(molecules)
-        generated_edge_dist = self.generated_edge_dist.compute()
-        self.edge_dist_mae(generated_edge_dist)
-
-        self.generated_valency_dist(molecules)
-        generated_valency_dist = self.generated_valency_dist.compute()
-        self.valency_dist_mae(generated_valency_dist)
-
-        to_log = {}
-        for i, atom_type in enumerate(self.dataset_info.atom_decoder):
-            generated_probability = generated_node_dist[i]
-            target_probability = self.node_target_dist[i]
-            to_log[f'molecular_metrics/{atom_type}_dist'] = (generated_probability - target_probability).item()
-
-        for j, bond_type in enumerate(['No bond', 'Single', 'Double', 'Triple', 'Aromatic']):
-            generated_probability = generated_edge_dist[j]
-            target_probability = self.edge_target_dist[j]
-            to_log[f'molecular_metrics/bond_{bond_type}_dist'] = (generated_probability - target_probability).item()
-
-        for valency in range(6):
-            generated_probability = generated_valency_dist[valency]
-            target_probability = self.valency_target_dist[valency]
-            to_log[f'molecular_metrics/valency_{valency}_dist'] = (generated_probability - target_probability).item()
-
-        n_mae = self.n_dist_mae.compute()
-        node_mae = self.node_dist_mae.compute()
-        edge_mae = self.edge_dist_mae.compute()
-        valency_mae = self.valency_dist_mae.compute()
-
-        if wandb.run:
-            wandb.log(to_log, commit=False)
-            wandb.run.summary['Gen n distribution'] = generated_n_dist
-            wandb.run.summary['Gen node distribution'] = generated_node_dist
-            wandb.run.summary['Gen edge distribution'] = generated_edge_dist
-            wandb.run.summary['Gen valency distribution'] = generated_valency_dist
-
-            wandb.log({'basic_metrics/n_mae': n_mae,
-                       'basic_metrics/node_mae': node_mae,
-                       'basic_metrics/edge_mae': edge_mae,
-                       'basic_metrics/valency_mae': valency_mae}, commit=False)
-
+        # 유효·유니크 SMILES 목록 저장 및 간단 요약 출력 (rank0 전용)
         if local_rank == 0:
-            print("Custom metrics computed.")
-        if local_rank == 0:
-            valid_unique_molecules = rdkit_metrics[1]
-            textfile = open(f'graphs/{name}/valid_unique_molecules_e{current_epoch}_b{val_counter}.txt', "w")
-            textfile.writelines(valid_unique_molecules)
-            textfile.close()
+            os.makedirs(f'graphs/{name}', exist_ok=True)
+            valid_unique_molecules = rdkit_metrics[1]  # 리스트/라인들
+            with open(f'graphs/{name}/valid_unique_molecules_e{current_epoch}_b{val_counter}.txt', "w") as f:
+                f.writelines(valid_unique_molecules)
             print("Stability metrics:", stability, "--", rdkit_metrics[0])
 
+        # CSV 누적 저장 (rank_zero_only로 데코된 헬퍼가 처리)
         _append_rdkit_csv(current_epoch, val_counter, rdkit_metrics)
+
+        # 추가 연산 없음 (MAE/분포 계산 완전 제거)
+        return
+
+    #def forward(self, molecules: list, name, current_epoch, val_counter, local_rank, test=False):
+    #    stability, rdkit_metrics, all_smiles = compute_molecular_metrics(molecules, self.train_smiles, self.dataset_info)
+#
+    #    if test and local_rank == 0:
+    #        with open(r'final_smiles.txt', 'w') as fp:
+    #            for smiles in all_smiles:
+    #                # write each item on a new line
+    #                fp.write("%s\n" % smiles)
+    #            print('All smiles saved')
+#
+    #    print("Starting custom metrics")
+        #self.generated_n_dist(molecules)
+        #generated_n_dist = self.generated_n_dist.compute()
+        #self.n_dist_mae(generated_n_dist)
+#
+        #self.generated_node_dist(molecules)
+        #generated_node_dist = self.generated_node_dist.compute()
+        #self.node_dist_mae(generated_node_dist)
+#
+        #self.generated_edge_dist(molecules)
+        #generated_edge_dist = self.generated_edge_dist.compute()
+        #self.edge_dist_mae(generated_edge_dist)
+#
+        #self.generated_valency_dist(molecules)
+        #generated_valency_dist = self.generated_valency_dist.compute()
+        #self.valency_dist_mae(generated_valency_dist)
+#
+        #to_log = {}
+        #for i, atom_type in enumerate(self.dataset_info.atom_decoder):
+        #    generated_probability = generated_node_dist[i]
+        #    target_probability = self.node_target_dist[i]
+        #    to_log[f'molecular_metrics/{atom_type}_dist'] = (generated_probability - target_probability).item()
+#
+        #for j, bond_type in enumerate(['No bond', 'Single', 'Double', 'Triple', 'Aromatic']):
+        #    generated_probability = generated_edge_dist[j]
+        #    target_probability = self.edge_target_dist[j]
+        #    to_log[f'molecular_metrics/bond_{bond_type}_dist'] = (generated_probability - target_probability).item()
+
+        #for valency in range(6):
+        #    generated_probability = generated_valency_dist[valency]
+        #    target_probability = self.valency_target_dist[valency]
+        #    to_log[f'molecular_metrics/valency_{valency}_dist'] = (generated_probability - target_probability).item()
+#
+        #n_mae = self.n_dist_mae.compute()
+        #node_mae = self.node_dist_mae.compute()
+        #edge_mae = self.edge_dist_mae.compute()
+        #valency_mae = self.valency_dist_mae.compute()
+#
+        #if wandb.run:
+        #    wandb.log(to_log, commit=False)
+        #    wandb.run.summary['Gen n distribution'] = generated_n_dist
+        #    wandb.run.summary['Gen node distribution'] = generated_node_dist
+        #    wandb.run.summary['Gen edge distribution'] = generated_edge_dist
+        #    wandb.run.summary['Gen valency distribution'] = generated_valency_dist
+#
+        #    wandb.log({'basic_metrics/n_mae': n_mae,
+        #               'basic_metrics/node_mae': node_mae,
+        #               'basic_metrics/edge_mae': edge_mae,
+        #               'basic_metrics/valency_mae': valency_mae}, commit=False)
+
+        #if local_rank == 0:
+        #    print("Custom metrics computed.")
+        #if local_rank == 0:
+        #    valid_unique_molecules = rdkit_metrics[1]
+        #    textfile = open(f'graphs/{name}/valid_unique_molecules_e{current_epoch}_b{val_counter}.txt', "w")
+        #    textfile.writelines(valid_unique_molecules)
+        #    textfile.close()
+        #    print("Stability metrics:", stability, "--", rdkit_metrics[0])
+#
+        #_append_rdkit_csv(current_epoch, val_counter, rdkit_metrics)
 
     def reset(self):
         for metric in [self.n_dist_mae, self.node_dist_mae, self.edge_dist_mae, self.valency_dist_mae]:
