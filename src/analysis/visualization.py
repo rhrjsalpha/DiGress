@@ -5,6 +5,8 @@ from rdkit.Chem import Draw, AllChem
 from rdkit.Geometry import Point3D
 from rdkit import RDLogger
 import imageio
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True  # 깨진 PNG도 읽기 시도
 import networkx as nx
 import numpy as np
 import rdkit.Chem
@@ -136,7 +138,18 @@ class MolecularVisualization:
             print("[viz] no drawable frames; skip gif")
             return mols
 
-        imgs = [imageio.imread(fn) for fn in save_paths]
+        def _safe_imread(p):
+            try:
+                return imageio.imread(p)
+            except Exception as e:
+                print(f"[viz] skip broken frame {p}: {e}")
+                return None
+
+        imgs = [im for im in (_safe_imread(fn) for fn in save_paths) if im is not None]
+        if not imgs:
+            print("[viz] no readable frames; skip gif")
+            return mols
+
         gif_path = os.path.join(os.path.dirname(path), '{}.gif'.format(path.split('/')[-1]))
         imgs.extend([imgs[-1]] * 10)
         imageio.mimsave(gif_path, imgs, subrectangles=True, duration=20)
@@ -320,10 +333,22 @@ class NonMolecularVisualization:
             self.visualize_non_molecule(graph=graphs[frame], pos=final_pos, path=file_name)
             save_paths.append(file_name)
 
-        imgs = [imageio.imread(fn) for fn in save_paths]
+        def _safe_imread(p):
+            try:
+                return imageio.imread(p)
+            except Exception as e:
+                print(f"[viz] skip broken frame {p}: {e}")
+                return None
+
+        imgs = [im for im in (_safe_imread(fn) for fn in save_paths) if im is not None]
+        if not imgs:
+            print("[viz] no readable frames; skip gif")
+            return graphs
+
         gif_path = os.path.join(os.path.dirname(path), '{}.gif'.format(path.split('/')[-1]))
         imgs.extend([imgs[-1]] * 10)
         imageio.mimsave(gif_path, imgs, subrectangles=True, duration=20)
+
         if wandb.run:
             wandb.log({'chain': [wandb.Video(gif_path, caption=gif_path, format="gif")]})
 

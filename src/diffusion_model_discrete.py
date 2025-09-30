@@ -913,11 +913,12 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         assert (E == torch.transpose(E, 1, 2)).all()
         assert number_chain_steps < self.T
-        chain_X_size = torch.Size((number_chain_steps, keep_chain, X.size(1)))
-        chain_E_size = torch.Size((number_chain_steps, keep_chain, E.size(1), E.size(2)))
-
-        chain_X = torch.zeros(chain_X_size)
-        chain_E = torch.zeros(chain_E_size)
+        collect_chain = (keep_chain is not None) and (keep_chain > 0)
+        if collect_chain:
+            chain_X_size = torch.Size((number_chain_steps, keep_chain, X.size(1)))
+            chain_E_size = torch.Size((number_chain_steps, keep_chain, E.size(1), E.size(2)))
+            chain_X = torch.zeros(chain_X_size)
+            chain_E = torch.zeros(chain_E_size)
 
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
         for s_int in reversed(range(0, self.T)):
@@ -931,9 +932,10 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             X, E, y = sampled_s.X, sampled_s.E, sampled_s.y
 
             # Save the first keep_chain graphs
-            write_index = (s_int * number_chain_steps) // self.T
-            chain_X[write_index] = discrete_sampled_s.X[:keep_chain]
-            chain_E[write_index] = discrete_sampled_s.E[:keep_chain]
+            if collect_chain:
+                write_index = (s_int * number_chain_steps) // self.T
+                chain_X[write_index, :keep_chain] = X[:keep_chain]
+                chain_E[write_index, :keep_chain] = E[:keep_chain]
 
         # Sample
         sampled_s = sampled_s.mask(node_mask, collapse=True)
@@ -968,24 +970,26 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         if self.visualization_tools is not None:
             current_path = os.getcwd()
 
-            # ---------- (A) 체인 GIF ----------
-            self.print('Visualizing chains...')
-            # chain_X: [T, keep_chain, maxN] , chain_E: [T, keep_chain, maxN, maxN]
-            num_molecules = int(chain_X.size(1))         # keep_chain과 동일해야 함
-            for i in range(num_molecules):
-                result_path = os.path.join(
-                    current_path,
-                    f'chains/{self.cfg.general.name}/epoch{self.current_epoch}/chains/molecule_{batch_id + i}'
-                )
-                os.makedirs(result_path, exist_ok=True)
-                # numpy로 변환할 때 CPU에 확실히 올려두기
-                _ = self.visualization_tools.visualize_chain(
-                    result_path,
-                    chain_X[:, i, :].detach().cpu().numpy(),
-                    chain_E[:, i, :].detach().cpu().numpy()
-                )
-                self.print(f'\r{i+1}/{num_molecules} complete', end='') # , flush=True
-            self.print('\nVisualizing molecules...')
+            # ---------- (A) 체인 GIF ----------  # ★ keep_chain>0일 때만
+            if collect_chain:
+                self.print('Visualizing chains...')
+                num_molecules = int(chain_X.size(1))
+                for i in range(num_molecules):
+                    result_path = os.path.join(
+                        current_path,
+                        f'chains/{self.cfg.general.name}/epoch{self.current_epoch}/chains/molecule_{batch_id + i}'
+                    )
+                    os.makedirs(result_path, exist_ok=True)
+                    try:
+                        _ = self.visualization_tools.visualize_chain(
+                            result_path,
+                            chain_X[:, i, :].detach().cpu().numpy(),
+                            chain_E[:, i, :].detach().cpu().numpy()
+                        )
+                    except Exception as e:
+                        self.print(f"[WARN] visualize_chain failed at molecule {i}: {e}")
+                    self.print(f'\r{i + 1}/{num_molecules} complete', end='')
+                self.print('\nVisualizing molecules...')
 
             # ---------- (B) 최종 분자 PNG (기존) ----------
             result_path = os.path.join(

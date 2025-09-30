@@ -616,10 +616,12 @@ def main(cfg: DictConfig):
     # ── (2) resume/test-only 처리 ───────────────────────────────────────────
     if cfg.general.test_only:
         cfg, _ = get_resume(cfg, model_kwargs)
-        os.chdir(cfg.general.test_only.split('checkpoints')[0])
+        # (테스트 전용에서 모든 ckpt를 훑어볼 때만 필요)
+        # if getattr(cfg.general, "evaluate_all_checkpoints", False):
+        #     os.chdir(cfg.general.test_only.split('checkpoints')[0])
     elif cfg.general.resume is not None:
         cfg, _ = get_resume_adaptive(cfg, model_kwargs)
-        os.chdir(cfg.general.resume.split('checkpoints')[0])
+        # ★중요: 학습 재시작에서는 절대로 chdir 하지 마세요.
 
     # ── (3) 폴더 생성 및 모델 빌드 ──────────────────────────────────────────
     utils.create_folders(cfg)
@@ -685,27 +687,37 @@ def main(cfg: DictConfig):
         periodic_ckpt = ModelCheckpoint(
             dirpath=f"checkpoints/{cfg.general.name}",
             filename="ep{epoch:03d}",
-            monitor=None,  # ← 주기 저장 모드
-            every_n_epochs=5,  # ← 5 에폭마다 저장
-            save_top_k=-1,  # 모두 보관 (원하면 1로 줄여도 됨)
+            monitor=None,
+            every_n_epochs=5,
+            save_top_k=-1,
             save_last=False,
-            save_weights_only=True,  # 빠르고 작게 저장하려면 추천
-            save_on_train_epoch_end=True,  # 검증 없어도 train epoch 끝에서 저장
+            save_weights_only=True,
+            save_on_train_epoch_end=True,  # 유지
         )
+
+        # 검증이 없을 수도 있으니 best_ckpt는 옵션 취급(있어도 무방)
         best_ckpt = ModelCheckpoint(
             dirpath=f"checkpoints/{cfg.general.name}",
             filename="{epoch}-{val_epoch_NLL:.3f}",
             monitor="val/epoch_NLL",
             mode="min",
             save_top_k=3,
-            save_last=True,  # 마지막도 한 개 남기고 싶다면
+            save_last=True,
             save_weights_only=True,
+            # 검증이 없으면 어차피 동작 안 함
         )
+
+        # ★ 중요: last.ckpt를 'train 에폭 종료 시'에도 저장하도록
         last_cb = ModelCheckpoint(
             dirpath=f"checkpoints/{cfg.general.name}",
-            filename='last',
-            every_n_epochs=1
+            filename="last",
+            save_top_k=1,
+            monitor=None,  # 모니터 없이
+            every_n_epochs=1,
+            save_weights_only=True,
+            save_on_train_epoch_end=True,  # ★ 추가
         )
+
         callbacks += [best_ckpt, periodic_ckpt, last_cb]
         callbacks.append(TestMetricsCSVCallback(filename="test_metrics.csv"))
         callbacks.append(TrainCaptureCSVCallback())
