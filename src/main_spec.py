@@ -556,6 +556,36 @@ def main(cfg: DictConfig):
         batch_size=cfg.train.batch_size,
         num_workers=cfg.train.num_workers,
     )
+
+    try:
+        # 데이터 준비
+        dm.setup(stage="fit")
+        # train dataset 객체에서 바로 확인
+        train_ds = getattr(dm, "train_dataset", None) or getattr(dm, "train_ds", None)
+        if train_ds is not None:
+            spec_len = getattr(train_ds, "spec_len", None)
+            y_dim_ds = getattr(train_ds, "y_dim", None)
+            print(f"[Y-CHECK] spec_len(from ds)={spec_len}, y_dim(from ds)={y_dim_ds}")
+
+        # 배치에서 직접 확인 (dict/tuple 모두 대응)
+        loader = dm.train_dataloader()
+        batch = next(iter(loader))
+        if isinstance(batch, dict):
+            y = batch.get("y", None)
+        elif isinstance(batch, (list, tuple)) and len(batch) >= 2:
+            # (inputs, y) 형태 대비
+            y = batch[1]
+        else:
+            y = None
+
+        if y is not None and hasattr(y, "shape"):
+            print(f"[Y-CHECK] batch y shape={tuple(y.shape)}  -> y_dim(from batch)={y.shape[-1]}")
+        else:
+            print("[Y-CHECK] Couldn't find 'y' in batch (check dataset keys).")
+
+    except Exception as e:
+        print(f"[Y-CHECK] failed to inspect y-dim: {e}")
+
     infos = CSVSpecInfos(dm, remove_h=getattr(cfg.dataset, "remove_h", False))
 
     # extra/domain features

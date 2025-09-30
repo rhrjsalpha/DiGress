@@ -26,21 +26,21 @@ DATASETS = {
         "train_csv":  "/home/user/Spectral_Data/QM_stratified_train_resplit_with_mu_eps.csv",
         "test_csv":   "/home/user/Spectral_Data/QM_stratified_test_resplit_with_mu_eps.csv",
         "batch_size": 1024,
-        "epochs":     10,
+        "epochs":     1000,
         "gpus":       3,
     },
     "Abs": {
         "train_csv":  "/home/user/Spectral_Data/train_good_rows.csv",
         "test_csv":   "/home/user/Spectral_Data/test_good_rows.csv",
         "batch_size": 32,
-        "epochs":     15,
+        "epochs":     1000,
         "gpus":       3,
     },
     "Em": {
         "train_csv":  "/home/user/Spectral_Data/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv",
         "test_csv":   "/home/user/Spectral_Data/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv",
         "batch_size": 32,
-        "epochs":     16,
+        "epochs":     1000,
         "gpus":       3,
     },
 }
@@ -55,8 +55,8 @@ DEFAULT_BATCH_SIZE = 32
 
 # 샘플/체인 저장 관련 (원하면 조정)
 SAMPLES_TO_GENERATE = 100
-SAMPLES_TO_SAVE     = 0
-CHAINS_TO_SAVE      = 0
+SAMPLES_TO_SAVE     = 1
+CHAINS_TO_SAVE      = 1
 N_CHAIN_STEPS       = 50
 FINAL_SAMPLES       = 100
 TARGET_SAFE_FOLDS   = 1

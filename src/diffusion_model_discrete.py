@@ -913,12 +913,18 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         assert (E == torch.transpose(E, 1, 2)).all()
         assert number_chain_steps < self.T
+        number_chain_steps = int(number_chain_steps)
         collect_chain = (keep_chain is not None) and (keep_chain > 0)
         if collect_chain:
-            chain_X_size = torch.Size((number_chain_steps, keep_chain, X.size(1)))
-            chain_E_size = torch.Size((number_chain_steps, keep_chain, E.size(1), E.size(2)))
-            chain_X = torch.zeros(chain_X_size)
-            chain_E = torch.zeros(chain_E_size)
+            keep_chain = min(int(keep_chain), int(batch_size))  # 안전 상한
+            chain_X = torch.zeros(
+                (number_chain_steps, keep_chain, X.size(1)),
+                device=X.device, dtype=torch.long  # 인덱스로 저장
+            )
+            chain_E = torch.zeros(
+                (number_chain_steps, keep_chain, E.size(1), E.size(2)),
+                device=E.device, dtype=torch.long
+            )
 
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
         for s_int in reversed(range(0, self.T)):
@@ -934,14 +940,14 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             # Save the first keep_chain graphs
             if collect_chain:
                 write_index = (s_int * number_chain_steps) // self.T
-                chain_X[write_index, :keep_chain] = X[:keep_chain]
-                chain_E[write_index, :keep_chain] = E[:keep_chain]
+                # X: [B, N, DX] → [B, N]
+                chain_X[write_index, :keep_chain] = X[:keep_chain].argmax(dim=-1)
+                # E: [B, N, N, DE] → [B, N, N]
+                chain_E[write_index, :keep_chain] = E[:keep_chain].argmax(dim=-1)
 
         # Sample
         sampled_s = sampled_s.mask(node_mask, collapse=True)
         X, E, y = sampled_s.X, sampled_s.E, sampled_s.y
-
-
 
         # Prepare the chain for saving
         if keep_chain > 0:
