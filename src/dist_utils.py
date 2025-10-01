@@ -2,6 +2,7 @@
 import os, sys, torch, platform
 from typing import Union, Sequence
 from pytorch_lightning.strategies import DDPStrategy
+from datetime import timedelta
 
 DevicesType = Union[int, Sequence[int], None]
 
@@ -34,7 +35,8 @@ def choose_ddp_strategy(devices: DevicesType, find_unused: bool = False):
     # Windows → gloo 고정(루프백은 main.py에서 이미 세팅)
     if sys.platform.startswith("win"):
         return DDPStrategy(process_group_backend="gloo",
-                           find_unused_parameters=bool(find_unused)), "gloo"
+                           find_unused_parameters=bool(find_unused),
+                           timeout=timedelta(hours=0.1)), "gloo"
 
     # Linux/WSL: 기본 nccl, 필요 시 gloo로 강제 가능
     backend = "nccl" if torch.cuda.is_available() else "gloo"
@@ -52,4 +54,5 @@ def choose_ddp_strategy(devices: DevicesType, find_unused: bool = False):
             backend = "gloo"
 
     return DDPStrategy(process_group_backend=backend,
-                       find_unused_parameters=bool(find_unused)), backend
+                       find_unused_parameters=bool(find_unused),
+                       timeout=timedelta(hours=3),), backend

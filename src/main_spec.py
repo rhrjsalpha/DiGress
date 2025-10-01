@@ -34,6 +34,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.utilities.warnings import PossibleUserWarning
 from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.strategies import DDPStrategy
 
 # 프로젝트 모듈 (기존 main과 동일한 경로 규칙)
 from src import utils
@@ -491,9 +492,10 @@ def get_resume_adaptive(cfg, model_kwargs):
     saved_cfg = cfg.copy()
     # resume 경로 절대화(있으면)
     if cfg.general.resume:
-        current_path = os.path.dirname(os.path.realpath(__file__))
-        root_dir = current_path.split('outputs')[0]
-        cfg.general.resume = os.path.join(root_dir, cfg.general.resume)
+        if not os.path.isabs(cfg.general.resume):
+            current_path = os.path.dirname(os.path.realpath(__file__))
+            root_dir = current_path.split('outputs')[0]
+            cfg.general.resume = os.path.join(root_dir, cfg.general.resume)
 
     # 여기서는 모델 로드 금지(로드하면 shape mismatch로 터짐)
     cfg.general.name = cfg.general.name + '_resume'
@@ -566,6 +568,9 @@ def main(cfg: DictConfig):
             spec_len = getattr(train_ds, "spec_len", None)
             y_dim_ds = getattr(train_ds, "y_dim", None)
             print(f"[Y-CHECK] spec_len(from ds)={spec_len}, y_dim(from ds)={y_dim_ds}")
+            print(f"[Y-CHECK] spec_len={dm.train_dataset.spec_len}, y_dim={dm.train_dataset.y_dim}")
+            print(
+                f"[Y-CHECK] globals={cfg.data.global_cols}, fixed_vocabs={list((cfg.data.fixed_vocabs or {}).keys())}, boolean={cfg.data.boolean_cols}")
 
         # 배치에서 직접 확인 (dict/tuple 모두 대응)
         loader = dm.train_dataloader()
@@ -711,6 +716,7 @@ def main(cfg: DictConfig):
     ckpt_input = cfg.general.resume or cfg.general.test_only
     if ckpt_input:
         ckpt_for_fit, _ = _load_weights_flex(model, ckpt_input)
+    print(f"[MODEL-CHECK], y_dim_from_data={dm.y_dim}")
 
     callbacks = []
     if cfg.train.save_model:

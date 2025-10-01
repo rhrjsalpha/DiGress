@@ -26,27 +26,27 @@ DATASETS = {
         "train_csv":  "/home/user/Spectral_Data/QM_stratified_train_resplit_with_mu_eps.csv",
         "test_csv":   "/home/user/Spectral_Data/QM_stratified_test_resplit_with_mu_eps.csv",
         "batch_size": 1024,
-        "epochs":     1000,
+        "epochs":     10,
         "gpus":       3,
     },
     "Abs": {
         "train_csv":  "/home/user/Spectral_Data/train_good_rows.csv",
         "test_csv":   "/home/user/Spectral_Data/test_good_rows.csv",
         "batch_size": 32,
-        "epochs":     1000,
+        "epochs":     10,
         "gpus":       3,
     },
     "Em": {
         "train_csv":  "/home/user/Spectral_Data/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv",
         "test_csv":   "/home/user/Spectral_Data/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv",
         "batch_size": 32,
-        "epochs":     1000,
+        "epochs":     10,
         "gpus":       3,
     },
 }
 
 # 실행 순서
-ORDER = ["QM", "Abs", "Em"]
+ORDER = ["QM", "Abs",] #  "Em"
 
 # 공통 기본값 (스테이지 설정에서 누락 시 폴백)
 DEFAULT_GPUS       = 3
@@ -54,11 +54,11 @@ DEFAULT_EPOCHS     = 10
 DEFAULT_BATCH_SIZE = 32
 
 # 샘플/체인 저장 관련 (원하면 조정)
-SAMPLES_TO_GENERATE = 100
+SAMPLES_TO_GENERATE = 40
 SAMPLES_TO_SAVE     = 1
 CHAINS_TO_SAVE      = 1
 N_CHAIN_STEPS       = 50
-FINAL_SAMPLES       = 100
+FINAL_SAMPLES       = 50
 TARGET_SAFE_FOLDS   = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -132,12 +132,18 @@ def _build_overrides(*, resume_ckpt: Optional[str], gpus: int, epochs: int, batc
         f"train.n_epochs={epochs}",
         f"train.batch_size={batch_size}",
         "train.save_model=True",
+        # eval용(안 써도 되지만 유지)
         f"general.samples_to_generate={SAMPLES_TO_GENERATE}",
         f"general.samples_to_save={SAMPLES_TO_SAVE}",
         f"general.chains_to_save={CHAINS_TO_SAVE}",
         f"general.number_chain_steps={N_CHAIN_STEPS}",
+        # ★ 핵심: Eval에서도 final_* 기본값(10000)을 반드시 덮어쓴다
+        f"general.final_model_samples_to_generate={FINAL_SAMPLES}",
+        f"general.final_model_samples_to_save={SAMPLES_TO_SAVE}",
+        f"general.final_model_chains_to_save={CHAINS_TO_SAVE}",
     ]
-    full = base + [f"general.final_model_samples_to_generate={FINAL_SAMPLES}"]
+    # full도 같은 값을 갖게 해 두면 혼동이 없음
+    full = list(base)
     if resume_ckpt:
         base.append(f'general.resume="{resume_ckpt}"')
         full.append(f'general.resume="{resume_ckpt}"')
@@ -163,16 +169,18 @@ def _run_boot_stage(label: str, conf: dict, resume_ckpt: Optional[str]) -> Path:
 
     # main_spec_boot_NoSmoke.py 실행 (inline)
     py_code = f"""
+from pathlib import Path
 import importlib.util, sys
 p = r"{BOOT_PATH}"
 spec = importlib.util.spec_from_file_location("boot", p)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-
+stage_out = (Path(r"{ROOT_FOR_BOOT.as_posix()}") / "bootstrap_cv_like_notval_resample" / r"{label}").as_posix()
 m.COMMON_SETTINGS.update({{
     "project_root": r"{ROOT_FOR_BOOT.as_posix()}",
     "train_csv": r"{train_csv.as_posix()}",
     "test_csv":  r"{test_csv.as_posix()}",
+    "out_root":  stage_out, 
     "name_prefix": r"{name_prefix}",
     "target_safe": {TARGET_SAFE_FOLDS},
     "reuse_existing_safe": True,
@@ -193,10 +201,10 @@ m.COMMON_SETTINGS.update({{
     "eval_extra_overrides": {eval_ovr!r},
     "do_full_retrain": True,
     "full_extra_overrides": {full_ovr!r},
-}})
+    }})
 m.USE_INLINE_SETTINGS = True
 m.main()
-"""
+    """
     ret = _shell([sys.executable, "-u", "-c", py_code])
     if ret != 0:
         raise SystemExit(f"[ERROR] stage '{label}' failed with return code {ret}")

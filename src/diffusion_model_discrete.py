@@ -16,6 +16,7 @@ from src import utils
 from rdkit import Chem
 import inspect
 from contextlib import contextmanager
+import torch.distributed as dist
 
 class DiscreteDenoisingDiffusion(pl.LightningModule):
     def __init__(self, cfg, dataset_infos, train_metrics, sampling_metrics, visualization_tools, extra_features,
@@ -372,9 +373,135 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         return {'loss': nll}
 
+    #def on_test_epoch_end(self) -> None:
+    #    """ Measure likelihood on a test set and compute stability metrics. """
+    #    self.print('on_test_epoch_end')
+    #    metrics = [self.test_nll.compute(), self.test_X_kl.compute(), self.test_E_kl.compute(),
+    #               self.test_X_logp.compute(), self.test_E_logp.compute()]
+    #    if wandb.run:
+    #        wandb.log({"test/epoch_NLL": metrics[0],
+    #                   "test/X_kl": metrics[1],
+    #                   "test/E_kl": metrics[2],
+    #                   "test/X_logp": metrics[3],
+    #                   "test/E_logp": metrics[4]}, commit=False)
+#
+    #    self.print(f"Epoch {self.current_epoch}: Test NLL {metrics[0] :.2f} -- Test Atom type KL {metrics[1] :.2f} -- ",
+    #               f"Test Edge type KL: {metrics[2] :.2f}")
+#
+    #    test_nll = metrics[0]
+    #    if wandb.run:
+    #        wandb.log({"test/epoch_NLL": test_nll}, commit=False)
+#
+    #    self.print(f'Test loss: {test_nll :.4f}')
+#
+    #    if len(self._test_condY) == 0:
+    #        raise RuntimeError("No test cond_y collected. Ensure test_step appends to self._test_condY.")
+#
+    #    # print("self._test_condY",self._test_condY)
+    #    condY_all = torch.cat(self._test_condY, dim=0)  # [N_test, 607]
+#
+    #    samples_left_to_generate = self.cfg.general.final_model_samples_to_generate
+    #    samples_left_to_save = self.cfg.general.final_model_samples_to_save
+    #    chains_left_to_save = self.cfg.general.final_model_chains_to_save
+#
+    #    samples = []
+    #    id = 0
+    #    while samples_left_to_generate > 0:
+    #        self.print(f'Samples left to generate: {samples_left_to_generate}/'
+    #                   f'{self.cfg.general.final_model_samples_to_generate}', end='', ) # flush=True
+    #        bs = 2 * self.cfg.train.batch_size
+    #        to_generate = min(samples_left_to_generate, bs)
+    #        to_save = min(samples_left_to_save, bs)
+    #        # chains_save = min(chains_left_to_save, bs)
+    #        chains_save = min(chains_left_to_save, to_generate)
+#
+    #        # ▶ cond_y_base slice 준비 (필요 시 순환)
+    #        if id + to_generate <= condY_all.size(0):
+    #            cond_slice = condY_all[id:id + to_generate]
+    #        else:
+    #            # test set보다 많이 뽑을 때는 앞에서부터 순환
+    #            need = to_generate
+    #            chunks = []
+    #            pos = id
+    #            while need > 0:
+    #                take = min(need, condY_all.size(0) - (pos % condY_all.size(0)))
+    #                s = pos % condY_all.size(0)
+    #                chunks.append(condY_all[s:s + take])
+    #                pos += take;
+    #                need -= take
+    #            cond_slice = torch.cat(chunks, dim=0)
+    #        cond_slice = cond_slice.to(self.device)  # [to_generate, 607]
+#
+    #        samples.extend(self.sample_batch(
+    #            batch_id=id,
+    #            batch_size=to_generate,
+    #            keep_chain=chains_save,
+    #            number_chain_steps=self.number_chain_steps,
+    #            save_final=to_save,
+    #            num_nodes=None,
+    #            cond_y_base=cond_slice,  # ★ 중요
+    #        ))
+#
+    #        id += to_generate
+    #        samples_left_to_save -= to_save
+    #        samples_left_to_generate -= to_generate
+    #        chains_left_to_save -= chains_save
+    #    self.print("Saving the generated graphs")
+    #    filename = f'generated_samples1.txt'
+    #    for i in range(2, 10):
+    #        if os.path.exists(filename):
+    #            filename = f'generated_samples{i}.txt'
+    #        else:
+    #            break
+    #    with open(filename, 'w') as f:
+    #        for item in samples:
+    #            f.write(f"N={item[0].shape[0]}\n")
+    #            atoms = item[0].tolist()
+    #            f.write("X: \n")
+    #            for at in atoms:
+    #                f.write(f"{at} ")
+    #            f.write("\n")
+    #            f.write("E: \n")
+    #            for bond_list in item[1]:
+    #                for bond in bond_list:
+    #                    f.write(f"{bond} ")
+    #                f.write("\n")
+    #            f.write("\n")
+    #    self.print("Generated graphs Saved. Computing sampling metrics...")
+    #    self.sampling_metrics(samples, self.name, self.current_epoch, self.val_counter, test=True, local_rank=self.local_rank)
+    #    self.print("Done testing.")
+
+    def _reload_best_if_available(self):
+        """샘플링 직전에 best.ckpt 로드(있으면). 실패해도 조용히 통과."""
+        try:
+            if hasattr(self.trainer, "checkpoint_callback"):
+                best_path = getattr(self.trainer.checkpoint_callback, "best_model_path", "")
+                if best_path and os.path.isfile(best_path):
+                    ckpt = torch.load(best_path, map_location=self.device)
+                    state = ckpt.get("state_dict", ckpt)
+                    self.load_state_dict(state, strict=False)
+                    self.print(f"[SAMPLE] reloaded BEST: {best_path}")
+                else:
+                    self.print("[SAMPLE] no best checkpoint; using current(last)")
+        except Exception as e:
+            self.print(f"[SAMPLE] best reload skipped: {e}")
+
+    def _is_dist_ready(self):
+        return dist.is_available() and dist.is_initialized()
+
+    def _broadcast_object_from_rank0(self, obj):
+        """rank0의 obj를 모든 랭크로 브로드캐스트하여 동일한 객체를 돌려준다."""
+        if not self._is_dist_ready():
+            return obj
+        obj_list = [obj if self.trainer.is_global_zero else None]
+        dist.broadcast_object_list(obj_list, src=0)
+        return obj_list[0]
+
     def on_test_epoch_end(self) -> None:
         """ Measure likelihood on a test set and compute stability metrics. """
         self.print('on_test_epoch_end')
+
+        # --- 테스트 지표(NLL/KL) 로깅 (이건 원래대로) ---
         metrics = [self.test_nll.compute(), self.test_X_kl.compute(), self.test_E_kl.compute(),
                    self.test_X_logp.compute(), self.test_E_logp.compute()]
         if wandb.run:
@@ -384,90 +511,112 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                        "test/X_logp": metrics[3],
                        "test/E_logp": metrics[4]}, commit=False)
 
-        self.print(f"Epoch {self.current_epoch}: Test NLL {metrics[0] :.2f} -- Test Atom type KL {metrics[1] :.2f} -- ",
-                   f"Test Edge type KL: {metrics[2] :.2f}")
-
+        self.print(f"Epoch {self.current_epoch}: Test NLL {metrics[0]:.2f} -- Test Atom type KL {metrics[1]:.2f} -- ",
+                   f"Test Edge type KL: {metrics[2]:.2f}")
         test_nll = metrics[0]
         if wandb.run:
             wandb.log({"test/epoch_NLL": test_nll}, commit=False)
-
         self.print(f'Test loss: {test_nll :.4f}')
 
         if len(self._test_condY) == 0:
             raise RuntimeError("No test cond_y collected. Ensure test_step appends to self._test_condY.")
 
-        # print("self._test_condY",self._test_condY)
         condY_all = torch.cat(self._test_condY, dim=0)  # [N_test, 607]
 
-        samples_left_to_generate = self.cfg.general.final_model_samples_to_generate
-        samples_left_to_save = self.cfg.general.final_model_samples_to_save
-        chains_left_to_save = self.cfg.general.final_model_chains_to_save
+        # ---- Eval/Final 분기: Eval은 samples_to_generate, Final은 final_model_* ----
+        is_eval = bool(getattr(self.cfg.general, "is_eval_run", False))
+        if is_eval:
+            total_to_generate = int(self.cfg.general.samples_to_generate)
+            to_save = int(self.cfg.general.samples_to_save)
+            chains_to_save = int(self.cfg.general.chains_to_save)
+        else:
+            total_to_generate = int(self.cfg.general.final_model_samples_to_generate)
+            to_save = int(self.cfg.general.final_model_samples_to_save)
+            chains_to_save = int(self.cfg.general.final_model_chains_to_save)
 
-        samples = []
-        id = 0
-        while samples_left_to_generate > 0:
-            self.print(f'Samples left to generate: {samples_left_to_generate}/'
-                       f'{self.cfg.general.final_model_samples_to_generate}', end='', ) # flush=True
-            bs = 2 * self.cfg.train.batch_size
-            to_generate = min(samples_left_to_generate, bs)
-            to_save = min(samples_left_to_save, bs)
-            # chains_save = min(chains_left_to_save, bs)
-            chains_save = min(chains_left_to_save, to_generate)
+        # ---- 모든 랭크를 맞춰두기 ----
+        if self._is_dist_ready():
+            dist.barrier()
 
-            # ▶ cond_y_base slice 준비 (필요 시 순환)
-            if id + to_generate <= condY_all.size(0):
-                cond_slice = condY_all[id:id + to_generate]
-            else:
-                # test set보다 많이 뽑을 때는 앞에서부터 순환
-                need = to_generate
-                chunks = []
-                pos = id
-                while need > 0:
-                    take = min(need, condY_all.size(0) - (pos % condY_all.size(0)))
-                    s = pos % condY_all.size(0)
-                    chunks.append(condY_all[s:s + take])
-                    pos += take;
-                    need -= take
-                cond_slice = torch.cat(chunks, dim=0)
-            cond_slice = cond_slice.to(self.device)  # [to_generate, 607]
+        # ========== rank0: 샘플 생성/저장 ==========
+        samples = None
+        if self.trainer.is_global_zero:
+            # (선택) best로 고정
+            self._reload_best_if_available()
 
-            samples.extend(self.sample_batch(
-                batch_id=id,
-                batch_size=to_generate,
-                keep_chain=chains_save,
-                number_chain_steps=self.number_chain_steps,
-                save_final=to_save,
-                num_nodes=None,
-                cond_y_base=cond_slice,  # ★ 중요
-            ))
+            self.eval()
+            torch.set_grad_enabled(False)
 
-            id += to_generate
-            samples_left_to_save -= to_save
-            samples_left_to_generate -= to_generate
-            chains_left_to_save -= chains_save
-        self.print("Saving the generated graphs")
-        filename = f'generated_samples1.txt'
-        for i in range(2, 10):
-            if os.path.exists(filename):
-                filename = f'generated_samples{i}.txt'
-            else:
-                break
-        with open(filename, 'w') as f:
-            for item in samples:
-                f.write(f"N={item[0].shape[0]}\n")
-                atoms = item[0].tolist()
-                f.write("X: \n")
-                for at in atoms:
-                    f.write(f"{at} ")
-                f.write("\n")
-                f.write("E: \n")
-                for bond_list in item[1]:
-                    for bond in bond_list:
-                        f.write(f"{bond} ")
+            samples = []
+            samples_left_to_generate = total_to_generate
+            samples_left_to_save = to_save
+            chains_left_to_save = chains_to_save
+            idx = 0
+            while samples_left_to_generate > 0:
+                self.print(f'Samples left to generate: {samples_left_to_generate}/{total_to_generate}', end='')
+                bs = 2 * int(self.cfg.train.batch_size)
+                to_generate = min(samples_left_to_generate, bs)
+                to_save_now = min(samples_left_to_save, bs)
+                chains_save = min(chains_left_to_save, to_generate)
+
+                # cond_y 슬라이스 (순환)
+                if idx + to_generate <= condY_all.size(0):
+                    cond_slice = condY_all[idx:idx + to_generate]
+                else:
+                    need, pos, chunks = to_generate, idx, []
+                    while need > 0:
+                        s = pos % condY_all.size(0)
+                        take = min(need, condY_all.size(0) - s)
+                        chunks.append(condY_all[s:s + take])
+                        pos += take;
+                        need -= take
+                    cond_slice = torch.cat(chunks, dim=0)
+                cond_slice = cond_slice.to(self.device)
+
+                samples.extend(self.sample_batch(
+                    batch_id=idx, batch_size=to_generate, keep_chain=chains_save,
+                    number_chain_steps=self.number_chain_steps, save_final=to_save_now,
+                    num_nodes=None, cond_y_base=cond_slice
+                ))
+
+                idx += to_generate
+                samples_left_to_generate -= to_generate
+                samples_left_to_save -= to_save_now
+                chains_left_to_save -= chains_save
+
+            # 파일 저장은 rank0만
+            self.print("Saving the generated graphs")
+            filename = f'generated_samples1.txt'
+            for i in range(2, 10):
+                if os.path.exists(filename):
+                    filename = f'generated_samples{i}.txt'
+                else:
+                    break
+            with open(filename, 'w') as f:
+                for item in samples:
+                    f.write(f"N={item[0].shape[0]}\n")
+                    atoms = item[0].tolist()
+                    f.write("X: \n")
+                    for at in atoms: f.write(f"{at} ")
+                    f.write("\nE: \n")
+                    for bond_list in item[1]:
+                        for bond in bond_list:
+                            f.write(f"{bond} ")
+                        f.write("\n")
                     f.write("\n")
-                f.write("\n")
+
+        # ---- 모든 랭크가 동일한 samples를 가지도록 브로드캐스트 ----
+        # (분산 집계가 필요한 sampling_metrics에서 데드락이 안 나게 하기 위함)
+        samples = self._broadcast_object_from_rank0(samples)
+
+        # 동기화 한 번 더 (rank0 파일 저장 완료 보장)
+        if self._is_dist_ready():
+            dist.barrier()
+
+        # ========== 모든 랭크: 동일한 samples로 metrics(분산 집계 OK) ==========
         self.print("Generated graphs Saved. Computing sampling metrics...")
-        self.sampling_metrics(samples, self.name, self.current_epoch, self.val_counter, test=True, local_rank=self.local_rank)
+        self.sampling_metrics(samples, self.name, self.current_epoch, self.val_counter,
+                              test=True, local_rank=self.local_rank)
         self.print("Done testing.")
 
     def on_train_end(self) -> None:
