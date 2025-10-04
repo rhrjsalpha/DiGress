@@ -45,9 +45,9 @@ def smiles_to_torch_geometric(smiles_string, x_classes, e_classes):
     '''
     mol = Chem.MolFromSmiles(smiles_string)                                     # RDKit을 사용하여 SMILES로부터 분자 객체 생성
     if mol is None: return None                                                 # 분자 생성에 실패하면 None을 반환
-    mol = Chem.AddHs(mol)                                                       # 분자에 수소 원자를 명시적으로 추가
+    # mol = Chem.AddHs(mol)                                                       # 분자에 수소 원자를 명시적으로 추가
 
-    atom_map = {1: 1, 6: 2, 7: 3, 8: 4, 9: 5}                                    # 원자 번호(H, C, N, O, F)를 정수 인덱스로 매핑
+    atom_map = {1:0, 6:1, 7:2, 8:3, 9:4}                                 # 원자 번호(H, C, N, O, F)를 정수 인덱스로 매핑
     atom_features = [atom_map.get(atom.GetAtomicNum(), 0) for atom in mol.GetAtoms()] # 각 원자의 원자 번호를 인덱스로 변환
     x = F.one_hot(torch.tensor(atom_features), num_classes=x_classes).float()    # 원자 특징을 원-핫 인코딩하여 텐서로 만듦
 
@@ -94,13 +94,17 @@ class DummyDatasetInfos:
     최소한의 데이터셋 정보를 제공하는 더미 클래스입니다.
     '''
     def __init__(self, x_classes, e_classes, max_nodes):
-        self.atom_decoder = {1: 'H', 2: 'C', 3: 'N', 4: 'O', 5: 'F'}            # 정수 인덱스를 원자 기호로 디코딩하는 맵
+        self.atom_decoder = {0:'H', 1:'C', 2:'N', 3:'O', 4:'F'}           # 정수 인덱스를 원자 기호로 디코딩하는 맵
         self.input_dims = {'X': x_classes, 'E': e_classes, 'y': 0}               # 모델의 입력 차원 정보
         self.output_dims = {'X': x_classes, 'E': e_classes, 'y': 0}              # 모델의 출력 차원 정보
         self.nodes_dist = torch.distributions.Categorical(torch.tensor([0.1] * max_nodes)) # 노드 수 분포 (여기서는 임의의 값)
         self.n_nodes = torch.ones(max_nodes + 1) / (max_nodes + 1)                  # 노드 개수에 대한 균일 분포
-        self.node_types = torch.ones(x_classes) / x_classes                         # 원자 종류에 대한 균일 분포
-        self.edge_types = torch.ones(e_classes) / e_classes                         # 결합 종류에 대한 균일 분포
+        # 예시: C,H,N,O,F 비율 가정
+        self.node_types = torch.tensor([0.1, 0.6, 0.1, 0.18, 0.02])  # 합=1
+        # 엣지: [no, single, double, triple, aromatic] 대략 비율
+        self.edge_types = torch.tensor([0.95, 0.04, 0.004, 0.002, 0.004])  # 합=1
+        #self.node_types = torch.ones(x_classes) / x_classes                         # 원자 종류에 대한 균일 분포
+        #self.edge_types = torch.ones(e_classes) / e_classes                         # 결합 종류에 대한 균일 분포
         self.valency_distribution = torch.ones(max_nodes * 2) / (max_nodes * 2)     # 원자가(valency) 분포 (여기서는 임의의 값)
         self.max_n_nodes = max_nodes                                                # 최대 노드 수
 
@@ -124,7 +128,7 @@ if __name__ == "__main__":
         sys.exit(1)                                                                 # 프로그램 종료
 
     # 2. 데이터 및 모델 설정 준비
-    X_CLASSES, E_CLASSES = 6, 5                                                 # 원자(H,C,N,O,F + 마스크)와 결합(없음,단일,이중,삼중,방향족) 종류의 수
+    X_CLASSES, E_CLASSES = 5, 5                                                 # 원자(H,C,N,O,F + 마스크)와 결합(없음,단일,이중,삼중,방향족) 종류의 수
     MAX_NODES = 128                                                             # 분자 내 최대 원자(노드) 수 설정
 
     dataset_infos = DummyDatasetInfos(x_classes=X_CLASSES, e_classes=E_CLASSES, max_nodes=MAX_NODES) # 더미 데이터셋 정보 객체 생성
@@ -167,9 +171,9 @@ if __name__ == "__main__":
             'n_layers': 2,
             'hidden_mlp_dims': {'X': 32, 'E': 32, 'y': 32},
             'hidden_dims': {'dx': 32, 'de': 32, 'dy': 32, 'n_head': 4, 'dim_ffX': 128, 'dim_ffE': 128, 'dim_ffy': 128},
-            'diffusion_steps': 500,
+            'diffusion_steps': 100,
             'diffusion_noise_schedule': 'cosine',
-            'transition': 'uniform',
+            'transition': 'marginal',
             'lambda_train': [1.0, 1.0, 1.0]
         }
     })
@@ -189,7 +193,10 @@ if __name__ == "__main__":
 
     # 4. 다른 타임스텝에서 노이즈 적용
     print("\n--- Applying Noise at Different Timesteps ---")                      # 노이즈 적용 과정 출력 시작
-    noise_timesteps = [0, 10, 50, 100, 250, 499]                                # 노이즈를 적용하고 시각화할 타임스텝 리스트
+
+    noise_timesteps = []  # 노이즈를 적용하고 시각화할 타임스텝 리스트
+    for i in range(dummy_model_cfg.model['diffusion_steps']):
+        noise_timesteps.append(i)
 
     for t in noise_timesteps:                                                   # 각 타임스텝에 대해 반복
         # apply_noise 함수에 전달할 타임스텝 t를 배치 크기만큼 복제하여 텐서 생성
