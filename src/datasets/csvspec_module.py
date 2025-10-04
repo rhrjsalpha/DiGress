@@ -782,13 +782,56 @@ class CSVSpecInfos(AbstractDatasetInfos):
         # n_nodes 분포 및 max_n_nodes
         import numpy as np
         sizes = []
-        node_type_hist = torch.zeros(datamodule.dx, dtype=torch.float)  # 11dim
-        edge_type_hist = torch.zeros(5, dtype=torch.float) # 5dim
+        node_type_hist = torch.zeros(datamodule.dx, dtype=torch.float)  # 노드 타입 카운트
+        edge_type_hist = torch.zeros(5, dtype=torch.float)  # [no-bond, single, double, triple, aromatic]
+
         for g in datamodule.train_dataset:
-            sizes.append(g.x.size(0))
-            node_type_hist += g.x.sum(dim=0).to(torch.float)  # g.x.shape[-1] == datamodule.dx
-            if g.edge_attr.numel() > 0:
-                edge_type_hist += g.edge_attr.sum(dim=0).to(torch.float)
+            n = int(g.x.size(0))
+            sizes.append(n)
+
+            # 노드 타입 누적
+            node_type_hist += g.x.sum(dim=0).to(torch.float)
+
+            # ----- 여기부터: no-bond 포함 엣지 타입 누적 -----
+            # 전체 (i<j) 쌍 수
+            total_pairs = n * (n - 1) // 2
+
+            # 초기 카운터
+            counts = torch.zeros(5, dtype=torch.float)
+
+            if getattr(g, "edge_index", None) is not None and g.edge_index.numel() > 0:
+                ei, ej = g.edge_index[0].long(), g.edge_index[1].long()
+
+                # PyG 그래프는 보통 양방향 저장 → (i<j)만 취해서 한 번만 카운트
+                mask_undirected = ei < ej
+                if mask_undirected.numel() > 0 and mask_undirected.any():
+                    # edge_attr 형태가 이미 5채널 원-핫(0..4)인지 확인
+                    ea = g.edge_attr
+                    if ea.size(-1) == 5:
+                        # (i<j) 행만 선택
+                        ea_und = ea[mask_undirected]  # (m_und, 5)
+                        # 존재 엣지만의 타입 합산 → no-bond(0)는 보통 전부 0
+                        counts += ea_und.sum(dim=0).to(torch.float)
+                        # 실제 엣지 수
+                        num_edges = int(mask_undirected.sum().item())
+                    else:
+                        # (예외) 4원-핫(+부가특성)일 경우: 앞 4채널 -> 1..4로 매핑
+                        types4 = ea[:, :4]  # (m, 4)
+                        t_idx = types4.argmax(dim=-1) + 1  # 1..4
+                        t_idx = t_idx[mask_undirected]
+                        binc = torch.bincount(t_idx, minlength=5).to(torch.float)  # 길이 5, 0번은 0
+                        counts += binc
+                        num_edges = int(mask_undirected.sum().item())
+                else:
+                    num_edges = 0
+            else:
+                num_edges = 0
+
+            # no-bond = 전체쌍 - 실제 엣지 수  → 0번 버킷에 추가
+            counts[0] += max(total_pairs - num_edges, 0)
+
+            # 전역 누적
+            edge_type_hist += counts
 
         self.max_n_nodes = int(max(sizes)) if len(sizes) else 64
         # 히스토그램을 분포로 정규화(0번째 버킷은 '0개 노드' 자리이므로 길이 max_n_nodes+1)

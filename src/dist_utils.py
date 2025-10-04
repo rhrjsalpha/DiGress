@@ -36,7 +36,7 @@ def choose_ddp_strategy(devices: DevicesType, find_unused: bool = False):
     if sys.platform.startswith("win"):
         return DDPStrategy(process_group_backend="gloo",
                            find_unused_parameters=bool(find_unused),
-                           timeout=timedelta(hours=0.1)), "gloo"
+                           timeout=timedelta(hours=3)), "gloo"
 
     # Linux/WSL: 기본 nccl, 필요 시 gloo로 강제 가능
     backend = "nccl" if torch.cuda.is_available() else "gloo"
