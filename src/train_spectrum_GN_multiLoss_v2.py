@@ -758,32 +758,49 @@ class ValPlotCallback(pl.Callback):
         epoch = trainer.current_epoch
         if epoch % self.every != 0:
             return
-        dm = trainer.datamodule
-        val_loader = dm.val_dataloader()
-        if val_loader is None:
+
+        # ① 기존 로더 재사용
+        if not trainer.val_dataloaders:
             return
-        batch = next(iter(val_loader)).to(pl_module.device)
-        spec_len = dm.spec_len
+        val_loader = trainer.val_dataloaders[0]
+
+        # ② iterator 캐시
+        if not hasattr(self, "_val_iter"):
+            self._val_iter = iter(val_loader)
+        try:
+            batch = next(self._val_iter)
+        except StopIteration:
+            self._val_iter = iter(val_loader)
+            batch = next(self._val_iter)
+
+        batch = batch.to(pl_module.device)
+
+        # ③ 예측 & 플롯 (그대로)
+        spec_len = trainer.datamodule.spec_len
         with torch.no_grad():
             y_true = batch.y[:, :spec_len]
-            cond = batch.y[:, spec_len:] if dm.cond_dim > 0 else None
+            cond = batch.y[:, spec_len:] if trainer.datamodule.cond_dim > 0 else None
             y_pred = pl_module.model(batch, cond=cond)
-        outdir = Path(os.getcwd()) / "chains" / dm.cfg.general.name / f"epoch{epoch:02d}" / "chains"
+
+        outdir = Path(os.getcwd()) / "chains" / trainer.datamodule.cfg.general.name / f"epoch{epoch:02d}" / "chains"
         outdir.mkdir(parents=True, exist_ok=True)
+
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        wl = torch.arange(dm.spec_start, dm.spec_end + 1).cpu().numpy()
+
+        wl = torch.arange(trainer.datamodule.spec_start, trainer.datamodule.spec_end + 1).cpu().numpy()
         k = min(self.n_samples, y_true.size(0))
         for i in range(k):
             fig = plt.figure(figsize=(6, 3))
             plt.plot(wl, y_true[i].detach().cpu().numpy(), label="true")
             plt.plot(wl, y_pred[i].detach().cpu().numpy(), label="pred")
-            plt.xlabel("wavelength"); plt.ylabel("intensity")
-            plt.legend(); plt.tight_layout()
+            plt.xlabel("wavelength");
+            plt.ylabel("intensity")
+            plt.legend();
+            plt.tight_layout()
             fig.savefig(outdir / f"sample_{i}.png", dpi=140)
             plt.close(fig)
-
 
 # =====================================================================
 #                              Trainer
