@@ -45,6 +45,7 @@ from pytorch_lightning.strategies import DDPStrategy
 from torch_geometric.nn import GINEConv, global_mean_pool, BatchNorm
 from torch_geometric.loader import DataLoader
 
+from contextlib import contextmanager
 from rdkit import Chem
 from rdkit.Chem import Draw
 
@@ -98,6 +99,18 @@ def _device_of(pl_module: "SpectrumModule"):
     if hasattr(pl_module, "device"):
         return pl_module.device
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+@contextmanager
+def _numba_cuda_temporarily_disabled():
+    prev = os.environ.get("NUMBA_DISABLE_CUDA", None)
+    os.environ["NUMBA_DISABLE_CUDA"] = "1"
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("NUMBA_DISABLE_CUDA", None)
+        else:
+            os.environ["NUMBA_DISABLE_CUDA"] = prev
 
 # =====================================================================
 #                         마일스톤 평가+그림 저장
@@ -364,9 +377,8 @@ class CSVSpecDataModule(pl.LightningDataModule):
         self.cfg = cfg
         self.spec_start = cfg.dataset.spec_start
         self.spec_end = cfg.dataset.spec_end
-        self.global_cols = ["solvent_phase", "is_qm", "dielectric_constant_avg", "pH_label"]
-        self.fixed_vocabs = {"solvent_phase": cfg.dataset.solvent_vocab,
-                             "pH_label": cfg.dataset.ph_vocab}
+        self.global_cols = [ "is_qm", "dielectric_constant_avg", "pH_label"] # "solvent_phase",
+        self.fixed_vocabs = {"pH_label": cfg.dataset.ph_vocab} # "solvent_phase": cfg.dataset.solvent_vocab
         self.boolean_cols = ["is_qm"]
         self.train_csv, self.val_csv, self.test_csv = cfg.dataset.train_csv, cfg.dataset.val_csv, cfg.dataset.test_csv
         self.num_workers, self.batch_size = cfg.train.num_workers, cfg.train.batch_size
@@ -1061,31 +1073,66 @@ def run_from_cfg(cfg: DictConfig,
     milestones_root = Path(os.getcwd()) / "milestones"
     milestones_summary_csv = merge_milestone_summaries(milestones_root, split_names=split_names)
 
-    # ---- 최종 지표 계산 (Train + Val|Test)
-    print("[FINAL] computing metrics on train/val ...")
-    t0 = time.perf_counter()
+    # ---- 최종 지표 계산 (Train + Val|Test)  [교체 시작] ----
+    if trainer.is_global_zero:
+        import matplotlib
+        matplotlib.use("Agg")
+        print("[FINAL] computing metrics on train/val (CPU, numba-cuda disabled) ...")
 
-    # CV 모드라면 train/val, Final 모드라면 train/test
-    train_metrics = compute_metrics_on_loader(
-        model, dm.train_dataloader(), dm.spec_len,
-        device_pref="cuda",  # 가능하면 GPU로
-        include_softdtw=True,  # 느리면 False로 끄기
-        max_batches=None,  # 느리면 20 같은 상한
-        show_progress=True,
-    )
+        with _numba_cuda_temporarily_disabled():
+            t0 = time.perf_counter()
 
-    if is_cv:
-        second_loader = dm.val_dataloader()
+            # 항상 CPU 평가로 강제 (numba/cuda 경로 방지)
+            train_metrics = compute_metrics_on_loader(
+                model, dm.train_dataloader(), dm.spec_len,
+                device_pref="cpu",
+                include_softdtw=True,  # 느리면 False로 꺼도 됩니다
+                max_batches=None,
+                show_progress=True,
+            )
+
+            second_loader = dm.val_dataloader() if is_cv else dm.test_dataloader()
+            second_metrics = compute_metrics_on_loader(
+                model, second_loader, dm.spec_len,
+                device_pref="cpu",
+                include_softdtw=True,
+                max_batches=None,
+                show_progress=True,
+            )
+
+            mode_label = "CV" if is_cv else "Final"
+            second_tag = "val" if is_cv else "test"
+            final_rows = {}
+            for k in ("mae", "mse", "rmse", "sid", "softdtw"):
+                if k in train_metrics:
+                    final_rows[f"{mode_label}_training_{k}"] = train_metrics[k]
+                if k in second_metrics:
+                    final_rows[f"{mode_label}_{second_tag}_{k}"] = second_metrics[k]
+
+            final_rows.update({
+                "job_name": str(getattr(cfg.general, "name", "")),
+                "backend": str(getattr(cfg.model, "backend", "")),
+                "fold_tag": ("" if fold_tag is None else str(fold_tag)),
+                "is_cv": bool(is_cv),
+            })
+
+            if final_csv_name is None:
+                stem = "final_metrics"
+                if fold_tag is not None and str(fold_tag) != "":
+                    stem += f"_{fold_tag}"
+                final_csv_name = stem + ".csv"
+
+            final_csv_path = Path(os.getcwd()) / final_csv_name
+            with open(final_csv_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(final_rows.keys()))
+                w.writeheader()
+                w.writerow(final_rows)
+
+            print("[DONE] final metrics saved →", str(final_csv_path))
     else:
-        second_loader = dm.test_dataloader()
-
-    second_metrics = compute_metrics_on_loader(
-        model, second_loader, dm.spec_len,
-        device_pref="cuda",
-        include_softdtw=True,
-        max_batches=None,
-        show_progress=True,
-    )
+        # 다른 rank는 아무 것도 하지 않음 (barrier 금지)
+        pass
+    # ---- 최종 지표 계산  [교체 끝] ----
 
     mode_label = "CV" if is_cv else "Final"
     second_tag = "val" if is_cv else "test"

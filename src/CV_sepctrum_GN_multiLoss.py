@@ -119,8 +119,8 @@ def collect_and_save_cv_summary(fold_dirs: List[Path],
 # ---- Excution Test  ----
 USE_INLINE_ARGS = True  # ← True이면 아래 INLINE 값이 기본으로 쓰임(CLI가 있으면 CLI가 우선)
 INLINE = {
-    "train_csv": "/root/PycharmProjects/DiGress/data/csv/EM_stratified_train_clustered_resplit_with_mu_eps.csv",
-    "test_csv":  "/root/PycharmProjects/DiGress/data/csv/EM_stratified_test_clustered_resplit_with_mu_eps.csv",
+    "train_csv": "/home/user/Spectral_Data/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv",
+    "test_csv":  "/home/user/Spectral_Data/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv",
     "n_splits": 5,
     "seed": 42,
     "shuffle": False,              # True/False
