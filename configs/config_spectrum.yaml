@@ -1,6 +1,6 @@
 general:
   name: spectrum_regression
-  gpus: 2          # 0|1|auto|[0,1]
+  gpus: 1          # 0|1|auto|[0,1]
   check_val_every_n_epochs: 1
   test_only: null
   gpu_monitor: false
@@ -18,7 +18,7 @@ train:
 
   #############
   n_epochs: 2000
-  batch_size: 32
+  batch_size: 20
   lr: 2e-4
   num_workers: 0
   save_model: true
@@ -26,7 +26,7 @@ train:
   clip_algo: "norm"
 
   # 멀티로스 + GradNorm 옵션
-  losses: ["SoftDTW", "SID"]      # ["MSE","MAE","SOFTDTW","SID"] 등
+  losses: ["MAE", "SID"]      # ["MSE","MAE","SOFTDTW","SID"] 등
   use_gradnorm: true
   alpha: 0.12
   softdtw_gamma: 0.2
@@ -45,9 +45,9 @@ train:
 
 dataset:
   name: "csvspec"
-  train_csv: "/home/user/Spectral_Data/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero"
+  train_csv: "C:/Users/analcheminfo/PycharmProjects/Graphormer_UV_VIS_AND_Fluoroscence/graphormer_data/EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
   val_csv: ""    # 빈 문자열 => train에서 90/10 split
-  test_csv:  "/home/user/Spectral_Data/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero"
+  test_csv:  "C:/Users/analcheminfo/PycharmProjects/Graphormer_UV_VIS_AND_Fluoroscence/graphormer_data/EM_stratified_test_clustered_resplit_with_mu_eps_fillZero.csv"
   spec_start: 200
   spec_end: 800
   solvent_vocab: ["solid","liquid","gas"]
