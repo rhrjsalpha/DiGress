@@ -95,6 +95,7 @@ def _ensure_dir(p: Path):
 def _rmse_from_mse(mse: float) -> float:
     return float(math.sqrt(max(0.0, mse)))
 
+
 def _device_of(pl_module: "SpectrumModule"):
     if hasattr(pl_module, "device"):
         return pl_module.device
@@ -1126,6 +1127,13 @@ def run_from_cfg(cfg: DictConfig,
                 if k in second_metrics:
                     final_rows[f"{mode_label}_{second_tag}_{k}"] = second_metrics[k]
 
+            def _maybe_sis(d):
+                sid = d.get("sid", float("nan"))
+                return (1.0 / (1.0 + sid)) if (sid == sid) else float("nan")  # NaN 방지
+
+            final_rows[f"{mode_label}_training_sis"] = _maybe_sis(train_metrics)
+            final_rows[f"{mode_label}_{second_tag}_sis"] = _maybe_sis(second_metrics)
+
             final_rows.update({
                 "job_name": str(getattr(cfg.general, "name", "")),
                 "backend": str(getattr(cfg.model, "backend", "")),
@@ -1160,6 +1168,13 @@ def run_from_cfg(cfg: DictConfig,
             final_rows[f"{mode_label}_training_{k}"] = train_metrics[k]
         if k in second_metrics:
             final_rows[f"{mode_label}_{second_tag}_{k}"] = second_metrics[k]
+
+    def _maybe_sis(d):
+        sid = d.get("sid", float("nan"))
+        return (1.0 / (1.0 + sid)) if (sid == sid) else float("nan")  # NaN 방지
+
+    final_rows[f"{mode_label}_training_sis"] = _maybe_sis(train_metrics)
+    final_rows[f"{mode_label}_{second_tag}_sis"] = _maybe_sis(second_metrics)
 
     # 메타 정보(선택): fold_tag, job_name, backend
     final_rows.update({
