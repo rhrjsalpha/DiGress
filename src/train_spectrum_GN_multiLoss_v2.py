@@ -196,8 +196,19 @@ class MilestoneEvalAndFigure(Callback):
             total_values += ys.numel()
 
             mask = torch.ones_like(ys, dtype=torch.bool)
-            sid_b = sid_loss(yh, ys, mask, eps=1e-6, reduction="mean_valid")
+
+            # (B, L) 요소별 SID → "나누지 않음": 파장축 합으로 샘플별 SID 계산
+            sid_elem = sid_loss(yh, ys, mask, eps=1e-6, reduction="none")  # (B, L)
+            sid_per_sample_sum = (sid_elem * mask).sum(dim=1)  # (B,)
+            sid_b = sid_per_sample_sum.mean()  # 배치 평균 SID(길이로 안 나눔)
             sum_sid += float(sid_b) * ys.size(0)
+
+            # 개별 SIS = 1/(1 + 개별 SID합) → 평균
+            sis_per_sample = 1.0 / (1.0 + sid_per_sample_sum)  # (B,)
+            avg_sis_batch = sis_per_sample.mean()
+            sum_sis = locals().get("sum_sis", 0.0) + float(avg_sis_batch) * ys.size(0)
+            locals()["sum_sis"] = sum_sis  # 함수 로컬에 누적변수 생성/유지
+
             sdtw_b = pl_module.softdtw(yh.unsqueeze(-1), ys.unsqueeze(-1))
             sum_sdtw += float(sdtw_b.sum().item())
             total_samples += ys.size(0)
@@ -228,8 +239,10 @@ class MilestoneEvalAndFigure(Callback):
         rmse = _rmse_from_mse(mse)
         sid_v = sum_sid / max(1, total_samples)
         sdtw = sum_sdtw / max(1, total_samples)
+        sis_v = (locals().get("sum_sis", 0.0)) / max(1, total_samples)
 
-        metrics = {"mae": mae, "mse": mse, "rmse": rmse, "sid": sid_v, "softdtw": sdtw}
+        metrics = {"mae": mae, "mse": mse, "rmse": rmse, "sid": sid_v, "sis": sis_v, "softdtw": sdtw}
+
         (outdir_split / "metrics.json").write_text(json.dumps(metrics, indent=2))
         try:
             import pandas as pd
@@ -920,6 +933,7 @@ def compute_metrics_on_loader(
         # ---- 누적 계산
         total_values = total_samples = 0
         sum_abs = sum_sq = sum_sid = sum_sdtw = 0.0
+        sum_sis = 0.0  # ★ 추가: SIS 합(샘플별 SIS를 평균내기 위함)
 
         it = loader
         try:
@@ -943,8 +957,16 @@ def compute_metrics_on_loader(
             total_values += ys.numel()
 
             mask = torch.ones_like(ys, dtype=torch.bool)
-            sid_b = sid_loss(yh, ys, mask, eps=1e-6, reduction="mean_valid")
+
+            # (B, L) → 파장축 합(길이로 나누지 않음)
+            sid_elem = sid_loss(yh, ys, mask, eps=1e-6, reduction="none")  # (B, L)
+            sid_per_sample_sum = (sid_elem * mask).sum(dim=1)  # (B,)
+            sid_b = sid_per_sample_sum.mean()  # 배치 평균 SID(비정규화)
             sum_sid += float(sid_b) * ys.size(0)
+
+            # 개별 SIS = 1/(1 + 개별 SID합) → 평균 누적
+            sis_per_sample = 1.0 / (1.0 + sid_per_sample_sum)  # (B,)
+            sum_sis += float(sis_per_sample.sum().item())
 
             if local_softdtw is not None:
                 sdtw_b = local_softdtw(yh.unsqueeze(-1), ys.unsqueeze(-1))
@@ -957,7 +979,9 @@ def compute_metrics_on_loader(
         rmse = float(max(mse, 0.0) ** 0.5)
         sid_v = sum_sid / max(1, total_samples)
         sdtw = (sum_sdtw / max(1, total_samples)) if include_softdtw else float("nan")
-        return {"mae": mae, "mse": mse, "rmse": rmse, "sid": sid_v, "softdtw": sdtw}
+        avg_sis = sum_sis / max(1, total_samples)  # ★ 추가: 샘플별 SIS 평균
+
+        return {"mae": mae, "mse": mse, "rmse": rmse, "sid": sid_v, "sis":avg_sis,"softdtw": sdtw}
     finally:
         # ---- 원상 복구
         try:
@@ -1121,18 +1145,14 @@ def run_from_cfg(cfg: DictConfig,
             mode_label = "CV" if is_cv else "Final"
             second_tag = "val" if is_cv else "test"
             final_rows = {}
-            for k in ("mae", "mse", "rmse", "sid", "softdtw"):
+            for k in ("mae", "mse", "rmse", "sid", "sis", "softdtw"):  # ★ 'sis' 포함
                 if k in train_metrics:
                     final_rows[f"{mode_label}_training_{k}"] = train_metrics[k]
                 if k in second_metrics:
                     final_rows[f"{mode_label}_{second_tag}_{k}"] = second_metrics[k]
 
-            def _maybe_sis(d):
-                sid = d.get("sid", float("nan"))
-                return (1.0 / (1.0 + sid)) if (sid == sid) else float("nan")  # NaN 방지
-
-            final_rows[f"{mode_label}_training_sis"] = _maybe_sis(train_metrics)
-            final_rows[f"{mode_label}_{second_tag}_sis"] = _maybe_sis(second_metrics)
+            #final_rows[f"{mode_label}_training_sis"] = _maybe_sis(train_metrics)
+            #final_rows[f"{mode_label}_{second_tag}_sis"] = _maybe_sis(second_metrics)
 
             final_rows.update({
                 "job_name": str(getattr(cfg.general, "name", "")),
@@ -1163,18 +1183,11 @@ def run_from_cfg(cfg: DictConfig,
     second_tag = "val" if is_cv else "test"
     # 컬럼명 규칙: CV_training_sid, CV_val_sid / Final_training_sid, Final_test_sid 등
     final_rows = {}
-    for k in ("mae", "mse", "rmse", "sid", "softdtw"):
+    for k in ("mae", "mse", "rmse", "sid", "sis", "softdtw"):  # ★ 'sis' 포함
         if k in train_metrics:
             final_rows[f"{mode_label}_training_{k}"] = train_metrics[k]
         if k in second_metrics:
             final_rows[f"{mode_label}_{second_tag}_{k}"] = second_metrics[k]
-
-    def _maybe_sis(d):
-        sid = d.get("sid", float("nan"))
-        return (1.0 / (1.0 + sid)) if (sid == sid) else float("nan")  # NaN 방지
-
-    final_rows[f"{mode_label}_training_sis"] = _maybe_sis(train_metrics)
-    final_rows[f"{mode_label}_{second_tag}_sis"] = _maybe_sis(second_metrics)
 
     # 메타 정보(선택): fold_tag, job_name, backend
     final_rows.update({
