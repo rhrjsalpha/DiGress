@@ -166,6 +166,7 @@ class CSVSpecDataset(InMemoryDataset):
         fixed_vocabs: Optional[Dict[str, List[str]]] = None,  # 예) {"solvent_phase":["solid","liquid","gas"], "pH_label":["acidic","basic","neutral"]}
         boolean_cols: Optional[List[str]] = None,             # 예) ["is_qm"]
         add_h: bool = False,
+
     ):
         self.csv_path = str(csv_path)
         self.stage = stage
@@ -186,6 +187,7 @@ class CSVSpecDataset(InMemoryDataset):
         super().__init__(root=root, transform=transform, pre_transform=pre_transform)
         # PyTorch 2.6: weights_only=False 명시
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
+        self._debug_global_once: bool = False
 
 
     def _ensure_stats(self) -> None:

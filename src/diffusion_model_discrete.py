@@ -6,12 +6,12 @@ import time
 import wandb
 import os
 
-from models.transformer_model import GraphTransformer
-from diffusion.noise_schedule import DiscreteUniformTransition, PredefinedNoiseScheduleDiscrete,\
+from src.models.transformer_model import GraphTransformer
+from src.diffusion.noise_schedule import DiscreteUniformTransition, PredefinedNoiseScheduleDiscrete,\
     MarginalUniformTransition
 from src.diffusion import diffusion_utils
-from metrics.train_metrics import TrainLossDiscrete
-from metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL
+from src.metrics.train_metrics import TrainLossDiscrete
+from src.metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL
 from src import utils
 from rdkit import Chem
 import inspect
@@ -1121,6 +1121,10 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             edge_types = E[i, :n, :n].cpu()
             molecule_list.append([atom_types, edge_types])
 
+        if getattr(self, "disable_sampling_visualization", False):
+            # 내부 체인 GIF / 패널 / PNG 전부 건너뛰고 바로 반환
+            return molecule_list
+
         # ===== 시각화 =====
         if self.visualization_tools is not None:
             current_path = os.getcwd()
@@ -1197,8 +1201,33 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                     title=f"epoch{self.current_epoch} | b{batch_id} | idx{i}",
                     log='panel'
                 )
+                from rdkit import Chem  # 파일 상단에 이미 있으면 생략 가능
+                smiles_list = []
+                for j in range(save_n):
+                    atom_types, edge_types = molecule_list[j]
+                    # RDKit Mol로 변환 (시각화에서 쓰는 것과 동일한 함수)
+                    gen_mol = self.visualization_tools.mol_from_graphs(
+                        atom_types.cpu().numpy(),
+                        edge_types.cpu().numpy()
+                    )
+                    if gen_mol is None:
+                        continue
+                    smi = Chem.MolToSmiles(gen_mol)
+                    smiles_list.append(smi)
 
-            self.print("Done.")
+                smiles_path = os.path.join(result_path, "generated_smiles.txt")
+                with open(smiles_path, "w", encoding="utf-8") as f:
+                    for s in smiles_list:
+                        f.write(s + "\n")
+
+                try:
+                    self.print("Done.")
+                except Exception as e:
+                    print(f"[ERROR] {e}")
+            try:
+                self.print("Done.")
+            except Exception as e:
+                print(f"[ERROR] {e}")
 
         return molecule_list
 
@@ -1269,7 +1298,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
     def compute_extra_data(self, noisy_data):
         """ At every training step (after adding noise) and step in sampling, compute extra information and append to
             the network input. """
-
+        # print(noisy_data)
         extra_features = self.extra_features(noisy_data)
         extra_molecular_features = self.domain_features(noisy_data)
 
