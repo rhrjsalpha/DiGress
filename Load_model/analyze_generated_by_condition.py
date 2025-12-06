@@ -22,23 +22,24 @@ import pandas as pd
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem, DataStructs  # <<< 추가
-
+from rdkit import RDLogger
+RDLogger.DisableLog("rdApp.*")
 # ------------------------------------------------------------------
 # 1. 경로 설정 (★ 여기만 바꿔서 사용)
 # ------------------------------------------------------------------
 # 생성 단계에서 만든 CSV
 GENERATED_CSV = Path(
-    r"C:\Users\analcheminfo\PycharmProjects\DiGress\Load_model\generated_from_condY_trainingset\generated_molecules_with_conditions.csv"
+    r"C:\Users\analcheminfo\PycharmProjects\DiGress\Load_model\generated_from_condY\generated_molecules_with_conditions.csv"
 )
 
 # train SMILES 목록 (novelty 계산용)
 # - 컬럼 이름은 기본으로 "SMILES" 라고 가정.
 # - novelty 안 쓸 거면 TRAIN_SMILES_CSV = None 로 두면 됨.
 TRAIN_SMILES_CSV: Optional[Path] = Path(
-    r"EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
+    r"C:\Users\analcheminfo\PycharmProjects\DiGress\Load_model\EM_stratified_train_clustered_resplit_with_mu_eps_fillZero.csv"
 )
 TRAIN_SMILES_COL = "InChI"
-
+TRAIN_IS_INCHI = True
 # 결과 저장 폴더
 OUT_DIR = GENERATED_CSV.parent / "metrics_per_condition"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,26 +53,36 @@ FP_NBITS = 2048
 
 def canonical_valid_smiles(smiles_list: List[str]) -> List[str]:
     """
+    generated CSV의 SMILES 전용 canonical 함수
+    (항상 SMILES 라고 가정)
+    """
+    return canonical_from_strings(smiles_list, is_inchi=False)
+
+def canonical_from_strings(str_list: List[str], is_inchi: bool = False) -> List[str]:
+    """
     문자열 리스트에서
     - NaN / 빈 문자열 / None 제거
-    - RDKit MolFromSmiles 로 파싱 가능한 것만 남기고
+    - is_inchi 에 따라 MolFromInchi 또는 MolFromSmiles 사용
     - canonical SMILES 로 변환해서 리턴
     """
     valids: List[str] = []
-    for s in smiles_list:
+    for s in str_list:
         if not isinstance(s, str):
             continue
         s = s.strip()
         if not s or s.lower() == "none":
             continue
-        mol = Chem.MolFromSmiles(s)
+
+        if is_inchi:
+            mol = Chem.MolFromInchi(s)
+        else:
+            mol = Chem.MolFromSmiles(s)
+
         if mol is None:
             continue
-        # canonical 로 통일
         can = Chem.MolToSmiles(mol)
         valids.append(can)
     return valids
-
 
 def compute_metrics_for_condition(
     smiles_series: pd.Series,
@@ -149,9 +160,15 @@ def main():
                 f"train CSV 에 '{TRAIN_SMILES_COL}' 컬럼이 없습니다. "
                 f"다른 이름이면 TRAIN_SMILES_COL 을 수정하세요."
             )
-        train_smiles = canonical_valid_smiles(train_df[TRAIN_SMILES_COL].tolist())
+
+        train_str_list = train_df[TRAIN_SMILES_COL].tolist()
+        # TRAIN_IS_INCHI 플래그에 따라 InChI 또는 SMILES로 처리
+        train_smiles = canonical_from_strings(
+            train_str_list,
+            is_inchi=TRAIN_IS_INCHI,
+        )
         train_smiles_set = set(train_smiles)
-        print(f"[INFO] Loaded {len(train_smiles_set)} train SMILES for novelty 계산.")
+        print(f"[INFO] Loaded {len(train_smiles_set)} train 구조 for novelty 계산.")
     else:
         print("[WARN] TRAIN_SMILES_CSV 를 찾을 수 없어서 novelty 를 계산하지 않습니다.")
         train_smiles_set = None
